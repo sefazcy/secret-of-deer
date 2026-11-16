@@ -6,6 +6,7 @@
 import "dotenv/config";
 import { db } from "../src/lib/db";
 import { generateTicketCode } from "../src/lib/ticket";
+import { aliasKey } from "../src/features/profile/alias";
 import { AVATAR_IDS, BUDGET_TIER_KEYS, INTEREST_SLUGS } from "../src/lib/constants";
 
 async function main() {
@@ -37,6 +38,7 @@ async function main() {
       update: {},
       create: {
         alias,
+        aliasKey: aliasKey(alias),
         avatarId: AVATAR_IDS[i % AVATAR_IDS.length]!,
         budgetTier: BUDGET_TIER_KEYS[i % 2]!,
         giftHints: "Demo profil — kupa, defter ya da güzel bir kahve olabilir.",

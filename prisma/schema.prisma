@@ -69,6 +69,8 @@ model ParticipantProfile {
   identityRef String? @unique @map("identity_ref")
 
   alias    String @unique
+  /// Benzersizlik anahtarı: Türkçe küçük harf + tek boşluk ("Beytepe  TİLKİSİ" = "beytepe tilkisi").
+  aliasKey String @unique @map("alias_key")
   avatarId String @map("avatar_id")
 
   budgetTier     BudgetTier @map("budget_tier")

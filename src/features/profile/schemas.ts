@@ -6,6 +6,7 @@ import {
   INTEREST_SLUGS,
   TEXT_LIMITS,
 } from "@/lib/constants";
+import { normalizeAlias } from "./alias";
 
 // Türkçe harfler, rakam, boşluk, nokta, tire ve kesme işareti.
 const ALIAS_PATTERN = /^[A-Za-zÇĞİÖŞÜçğıöşü0-9 .'\-]+$/;
@@ -17,7 +18,8 @@ export const aliasStepSchema = z.object({
     .trim()
     .min(TEXT_LIMITS.aliasMin, { error: `Rumuz en az ${TEXT_LIMITS.aliasMin} karakter olmalı.` })
     .max(TEXT_LIMITS.aliasMax, { error: `Rumuz en fazla ${TEXT_LIMITS.aliasMax} karakter olabilir.` })
-    .regex(ALIAS_PATTERN, { error: "Rumuzda sadece harf, rakam ve boşluk kullanabilirsin." }),
+    .regex(ALIAS_PATTERN, { error: "Rumuzda sadece harf, rakam ve boşluk kullanabilirsin." })
+    .transform(normalizeAlias),
   avatarId: z.enum(AVATAR_IDS, { error: "Bir avatar seç." }),
 });
 
