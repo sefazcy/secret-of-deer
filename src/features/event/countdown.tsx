@@ -1,13 +1,6 @@
 "use client";
 
-import { useSyncExternalStore } from "react";
-
-function subscribe(onTick: () => void) {
-  const id = setInterval(onTick, 1000);
-  return () => clearInterval(id);
-}
-const getNowSeconds = () => Math.floor(Date.now() / 1000);
-const getServerNow = () => null; // Sunucuda saat yok → hydration uyuşmazlığı olmaz
+import { useNow } from "@/lib/use-now";
 
 const UNITS = [
   { label: "gün", seconds: 86400 },
@@ -26,7 +19,8 @@ function splitDuration(totalSeconds: number): number[] {
 }
 
 export function Countdown({ target }: { target: string }) {
-  const now = useSyncExternalStore(subscribe, getNowSeconds, getServerNow);
+  const nowMs = useNow();
+  const now = nowMs === null ? null : Math.floor(nowMs / 1000);
   const targetSeconds = Math.floor(new Date(target).getTime() / 1000);
 
   if (now !== null && now >= targetSeconds) {
