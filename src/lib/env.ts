@@ -15,6 +15,8 @@ const envSchema = z.object({
   PROFILE_LINK_SECRET: z.string().min(32),
   ADMIN_PASSWORD: z.string().min(12, "ADMIN_PASSWORD en az 12 karakter olmalı"),
   CHECKIN_PASSWORD: z.string().min(8, "CHECKIN_PASSWORD en az 8 karakter olmalı"),
+  /** E-postalardaki bağlantılar için sitenin kök adresi (sonda / olmadan). */
+  SITE_URL: z.url().default("http://localhost:3000").transform((u) => u.replace(/\/+$/, "")),
   MAIL_MODE: z.enum(["console", "smtp"]).default("console"),
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().int().positive().default(587),

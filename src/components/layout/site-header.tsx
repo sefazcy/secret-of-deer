@@ -1,4 +1,36 @@
 import Link from "next/link";
+import { Suspense } from "react";
+import { getCurrentIdentity } from "@/features/auth/dal";
+import { getSession } from "@/lib/session";
+
+const primary = "rounded-lg bg-holly px-3 py-2 font-semibold text-holly-ink hover:brightness-110";
+const plain = "rounded-lg px-3 py-2 hover:bg-white/10";
+
+/** Oturuma göre menü: ziyaretçi → Katıl, öğrenci → Panelim, ekip → Yönetim / Check-in. */
+async function HeaderNav() {
+  const [session, identity] = await Promise.all([getSession(), getCurrentIdentity()]);
+  const staff = session.staffRole;
+  return (
+    <>
+      {staff && (
+        <Link href={staff === "admin" ? "/admin" : "/admin/check-in"} className={plain}>
+          {staff === "admin" ? "Yönetim" : "Check-in"}
+        </Link>
+      )}
+      {identity ? (
+        <Link href="/panel" className={primary}>
+          Panelim
+        </Link>
+      ) : (
+        !staff && (
+          <Link href="/kayit" className={primary}>
+            Katıl
+          </Link>
+        )
+      )}
+    </>
+  );
+}
 
 export function SiteHeader() {
   return (
@@ -8,16 +40,11 @@ export function SiteHeader() {
           <span aria-hidden className="text-xl">🦌</span>
           Beytepe Geyiği
         </Link>
-        <nav className="flex items-center gap-1 text-sm">
-          <Link href="/panel" className="rounded-lg px-3 py-2 hover:bg-white/10">
-            Panelim
-          </Link>
-          <Link
-            href="/kayit"
-            className="rounded-lg bg-holly px-3 py-2 font-semibold text-holly-ink hover:brightness-110"
-          >
-            Katıl
-          </Link>
+        <nav className="flex items-center gap-1 text-sm" aria-label="Ana menü">
+          {/* Oturum okunurken yer tutucu: yanlış butonun bir an görünmesini (flash) önler. */}
+          <Suspense fallback={<span className="h-9 w-20 rounded-lg bg-white/10" aria-hidden />}>
+            <HeaderNav />
+          </Suspense>
         </nav>
       </div>
     </header>

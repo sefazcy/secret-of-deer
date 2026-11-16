@@ -48,6 +48,8 @@ src/
     matching/            #   eşleştirme algoritması + testleri, service.ts (DB'ye yazma)
     event/               #   etkinlik ayarları sorguları, geri sayım
     panel/               #   öğrenci paneli: faz bazlı veri, eşleşme kartı, QR bilet
+    admin/               #   ekip girişi, yetki (dal.ts), KPI, joker, eşleştirme/imha aksiyonları
+    checkin/             #   kapı check-in aksiyonları, kamera QR tarayıcı (BarcodeDetector → jsQR)
   components/            # Paylaşılan UI (ui/, layout/, providers/)
   lib/                   # Altyapı: db, env, crypto, session, mail, ticket, constants
   generated/prisma/      # Prisma client çıktısı (git'e girmez)
@@ -61,8 +63,10 @@ src/
 - **E-posta:** `email_hash` = HMAC-SHA256(pepper, e-posta). Spesifikasyondaki düz SHA-256 yerine anahtarlı HMAC kullanılıyor, çünkü öğrenci adresleri tahmin edilebilir ve düz özet sözlük saldırısıyla çözülebilir. `encrypted_email` = AES-256-GCM.
 - **OTP:** Kodun kendisi değil, HMAC özeti saklanır. 10 dk geçerli, en fazla 5 deneme, 60 sn tekrar gönderme aralığı (`lib/constants.ts`).
 - **Katman ayrımı:** `ParticipantProfile.identity_ref` = HMAC(`PROFILE_LINK_SECRET`, `AuthIdentity.profile_token`). Veritabanı tek başına sızarsa profil ile e-posta eşleştirilemez.
-- **Admin:** Eşleşme listesi gösterilmez, sadece istatistik.
-- **İmha:** Etkinlik sonunda `auth_identities`, `participant_profiles`, `profile_interests` ve `matches` tabloları tamamen silinir.
+- **Ekip girişi (`/admin/giris`):** `ADMIN_PASSWORD` → tüm yönetim paneli, `CHECKIN_PASSWORD` → yalnızca `/admin/check-in`. Şifreler sabit zamanlı karşılaştırılır; IP başına 15 dakikada 10 deneme (süreç içi sayaç, çok örnekli dağıtımda Redis'e taşınmalı). Rol, şifreli oturum çerezinde tutulur; `proxy.ts` yalnızca iyimser kontrol yapar, asıl yetki her sayfa ve server action'da `requireStaff()` ile sunucuda denetlenir.
+- **Admin:** Eşleşme listesi gösterilmez, sadece grup istatistikleri. Tek istisna jokerler: ekip üyesi oldukları için hediye alacakları kişi panelde görünür.
+- **Bildirim e-postası:** Yalnızca "eşleşmen hazır, panele gir" der; kimin kime çıktığı e-postada yer almaz. Bağlantı için `SITE_URL` gerekir.
+- **İmha:** "Etkinliği sonlandır" iki aşamalı onay ister (uyarı + `VERİLERİ İMHA ET` yazımı; sunucu da ifadeyi doğrular). Tek transaction'da `auth_identities`, `participant_profiles`, `profile_interests` ve `matches` tamamen silinir, faz `CLOSED` olur, ardından `VACUUM` ile silinen satırların dosyadaki izi temizlenir.
 
 ## Eşleştirme
 

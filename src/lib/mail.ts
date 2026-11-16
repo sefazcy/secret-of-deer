@@ -49,3 +49,22 @@ export async function sendOtpMail(to: string, code: string): Promise<void> {
     ].join("\n"),
   });
 }
+
+/**
+ * Eşleşme duyurusu. Gizlilik ve oltalama riskine karşı e-postada eşleşme bilgisi YOK;
+ * öğrenci ayrıntıları yalnızca giriş yaptıktan sonra panelde görür.
+ */
+export async function sendMatchReadyMail(to: string, siteUrl: string): Promise<void> {
+  await sendMail({
+    to,
+    subject: "🦌 Eşleşmen hazır! Hediye alacağın kişiyi öğren",
+    text: [
+      "Selam!",
+      "",
+      "Beytepe Geyiği eşleşmeleri açıklandı. Kime hediye alacağını görmek için panelin seni bekliyor:",
+      `${siteUrl}/panel`,
+      "",
+      "Hediyeni aldığında panelden \"Hediyemi aldım\" onayını vermeyi unutma. 🎁",
+    ].join("\n"),
+  });
+}

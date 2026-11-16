@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
+import { connection } from "next/server";
 import { getIronSession, type SessionOptions } from "iron-session";
 import { env } from "./env";
 
@@ -32,5 +33,9 @@ function sessionOptions(): SessionOptions {
  * Server Component'ler bir <Suspense> sınırı içinde olmalıdır.
  */
 export async function getSession() {
-  return getIronSession<SessionData>(await cookies(), sessionOptions());
+  const store = await cookies();
+  // iron-session çerezi açarken TTL için Date.now() okur. Çerezler bilinirken yapılan ön render
+  // (runtime prefetch) sırasında bu "kararsız değer" sayılır; çözümü isteğe ertelemek.
+  await connection();
+  return getIronSession<SessionData>(store, sessionOptions());
 }
