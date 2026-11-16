@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition, type FormEvent } from "react";
+import { useId, useState, useTransition, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { OtpInput } from "@/components/ui/otp-input";
@@ -13,6 +13,8 @@ import { requestOtpSchema } from "../schemas";
 type Field = "email" | "kvkk" | "pledge";
 
 export function RegisterFlow() {
+  // Sabit id yerine useId: Next, önceki rotaları gizli olarak DOM'da tuttuğu için sabit id'ler çakışır.
+  const uid = useId();
   const [step, setStep] = useState<"email" | "code">("email");
   const [email, setEmail] = useState("");
   const [kvkk, setKvkk] = useState(false);
@@ -117,11 +119,11 @@ export function RegisterFlow() {
           length={OTP.length}
           disabled={isPending}
           invalid={!!codeError}
-          describedBy={codeError ? "otp-error" : undefined}
+          describedBy={codeError ? `${uid}otp-error` : undefined}
           autoFocus
         />
         {codeError && (
-          <p id="otp-error" role="alert" className="text-sm font-medium text-holly">
+          <p id={`${uid}otp-error`} role="alert" className="text-sm font-medium text-holly">
             {codeError}
           </p>
         )}
@@ -159,11 +161,11 @@ export function RegisterFlow() {
   return (
     <form onSubmit={onEmailSubmit} className="space-y-5" noValidate>
       <div className="space-y-2">
-        <label htmlFor="email" className="block font-semibold">
+        <label htmlFor={`${uid}email`} className="block font-semibold">
           Hacettepe e-posta adresin
         </label>
         <input
-          id="email"
+          id={`${uid}email`}
           type="email"
           inputMode="email"
           autoComplete="email"
@@ -176,13 +178,13 @@ export function RegisterFlow() {
             if (fieldErrors.email) setFieldErrors((f) => ({ ...f, email: undefined }));
           }}
           aria-invalid={!!fieldErrors.email || undefined}
-          aria-describedby="email-help"
+          aria-describedby={`${uid}email-help`}
           disabled={isPending}
           className={`h-12 w-full rounded-xl border-2 bg-surface px-4 text-base outline-none transition focus:border-gold ${
             fieldErrors.email ? "border-holly" : "border-border"
           }`}
         />
-        <p id="email-help" className={`text-sm ${fieldErrors.email ? "font-medium text-holly" : "text-ink-muted"}`}>
+        <p id={`${uid}email-help`} className={`text-sm ${fieldErrors.email ? "font-medium text-holly" : "text-ink-muted"}`}>
           {fieldErrors.email ?? `Sadece ${ALLOWED_EMAIL_DOMAINS.map((d) => `@${d}`).join(" veya ")} adresleri kabul edilir.`}
         </p>
       </div>
@@ -240,28 +242,30 @@ function Consent({
   disabled?: boolean;
   children: React.ReactNode;
 }) {
+  const uid = useId();
+  const fid = `${uid}${id}`;
   return (
     <div>
       <label
-        htmlFor={id}
+        htmlFor={fid}
         className={`flex cursor-pointer gap-3 rounded-xl border-2 bg-surface p-4 text-sm leading-relaxed transition ${
           error ? "border-holly" : checked ? "border-pine" : "border-border"
         }`}
       >
         <input
-          id={id}
+          id={fid}
           type="checkbox"
           checked={checked}
           onChange={(e) => onChange(e.target.checked)}
           disabled={disabled}
           aria-invalid={!!error || undefined}
-          aria-describedby={error ? `${id}-error` : undefined}
+          aria-describedby={error ? `${fid}-error` : undefined}
           className="mt-0.5 size-5 shrink-0 accent-[var(--pine)]"
         />
         <span>{children}</span>
       </label>
       {error && (
-        <p id={`${id}-error`} className="mt-1 text-sm font-medium text-holly">
+        <p id={`${fid}-error`} className="mt-1 text-sm font-medium text-holly">
           {error}
         </p>
       )}

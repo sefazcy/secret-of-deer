@@ -6,7 +6,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { deriveIdentityRef } from "@/lib/crypto";
 import { generateTicketCode } from "@/lib/ticket";
-import { getCurrentIdentity } from "@/features/auth/dal";
+import { getCurrentIdentity, getCurrentProfileId } from "@/features/auth/dal";
 import { PARTICIPANT_COUNT_TAG } from "@/features/event/queries";
 import { aliasKey, generateAlias, normalizeAlias } from "./alias";
 import { aliasStepSchema, profileSchema, type ProfileInput } from "./schemas";
@@ -14,6 +14,7 @@ import { aliasStepSchema, profileSchema, type ProfileInput } from "./schemas";
 type ProfileField = keyof ProfileInput;
 
 export type AliasCheckResult = { ok: true; alias: string } | { ok: false; message: string };
+export type UpdateProfileResult = { ok: true } | CreateProfileResult;
 export type CreateProfileResult = {
   ok: false;
   message: string;
@@ -31,15 +32,29 @@ const STEP_OF: Record<ProfileField, 1 | 2 | 3> = {
   giftExclusions: 3,
 };
 
-async function isAliasTaken(alias: string): Promise<boolean> {
+/** Rumuz başka bir profil tarafından alınmış mı? (Düzenlemede kişinin kendi rumuzu sayılmaz.) */
+async function isAliasTaken(alias: string, exceptProfileId?: string | null): Promise<boolean> {
   const hit = await db.participantProfile.findUnique({ where: { aliasKey: aliasKey(alias) }, select: { id: true } });
-  return !!hit;
+  return !!hit && hit.id !== exceptProfileId;
 }
 
 async function requireIdentity() {
   const identity = await getCurrentIdentity();
   if (!identity) redirect("/kayit");
   return identity;
+}
+
+function parseProfile(input: ProfileInput) {
+  const parsed = profileSchema.safeParse(input);
+  if (parsed.success) return { ok: true as const, data: parsed.data };
+  const fieldErrors: Partial<Record<ProfileField, string>> = {};
+  for (const issue of parsed.error.issues) {
+    const key = issue.path[0] as ProfileField;
+    fieldErrors[key] ??= issue.message;
+  }
+  const firstField = Object.keys(fieldErrors)[0] as ProfileField;
+  const error: CreateProfileResult = { ok: false, message: fieldErrors[firstField]!, fieldErrors, step: STEP_OF[firstField] };
+  return { ok: false as const, error };
 }
 
 const ALIAS_TAKEN = "Bu rumuz alınmış 🦊 Başka bir tane dene ya da rastgele üret.";
@@ -49,7 +64,7 @@ export async function checkAlias(alias: string): Promise<AliasCheckResult> {
   await requireIdentity();
   const parsed = aliasStepSchema.shape.alias.safeParse(alias);
   if (!parsed.success) return { ok: false, message: parsed.error.issues[0]!.message };
-  if (await isAliasTaken(parsed.data)) return { ok: false, message: ALIAS_TAKEN };
+  if (await isAliasTaken(parsed.data, await getCurrentProfileId())) return { ok: false, message: ALIAS_TAKEN };
   return { ok: true, alias: parsed.data };
 }
 
@@ -71,16 +86,8 @@ export async function suggestAlias(): Promise<string> {
 export async function createProfile(input: ProfileInput): Promise<CreateProfileResult> {
   const identity = await requireIdentity();
 
-  const parsed = profileSchema.safeParse(input);
-  if (!parsed.success) {
-    const fieldErrors: Partial<Record<ProfileField, string>> = {};
-    for (const issue of parsed.error.issues) {
-      const key = issue.path[0] as ProfileField;
-      fieldErrors[key] ??= issue.message;
-    }
-    const firstField = Object.keys(fieldErrors)[0] as ProfileField;
-    return { ok: false, message: fieldErrors[firstField]!, fieldErrors, step: STEP_OF[firstField] };
-  }
+  const parsed = parseProfile(input);
+  if (!parsed.ok) return parsed.error;
   const data = parsed.data;
 
   const settings = await db.eventSettings.findUnique({ where: { id: 1 }, select: { phase: true } });
@@ -129,4 +136,56 @@ export async function createProfile(input: ProfileInput): Promise<CreateProfileR
 
   updateTag(PARTICIPANT_COUNT_TAG);
   redirect("/panel");
+}
+
+/**
+ * Panelden profil düzenleme. Yalnızca kayıt fazında (eşleşmeler ilgi alanı ve bütçeye göre
+ * yapıldığı için sonrasında değişiklik eşleşmeyi bozar).
+ */
+export async function updateProfile(input: ProfileInput): Promise<UpdateProfileResult> {
+  const identity = await requireIdentity();
+  const parsed = parseProfile(input);
+  if (!parsed.ok) return parsed.error;
+  const data = parsed.data;
+
+  const settings = await db.eventSettings.findUnique({ where: { id: 1 }, select: { phase: true } });
+  if (settings && settings.phase !== "REGISTRATION") {
+    return { ok: false, message: "Eşleşmeler yapıldıktan sonra profil değiştirilemez." };
+  }
+
+  const profile = await db.participantProfile.findUnique({
+    where: { identityRef: deriveIdentityRef(identity.profileToken) },
+    select: { id: true },
+  });
+  if (!profile) redirect("/profil-olustur");
+
+  const alias = normalizeAlias(data.alias);
+  if (await isAliasTaken(alias, profile.id)) {
+    return { ok: false, message: ALIAS_TAKEN, fieldErrors: { alias: ALIAS_TAKEN }, step: 1 };
+  }
+
+  try {
+    await db.$transaction([
+      db.profileInterest.deleteMany({ where: { profileId: profile.id } }),
+      db.participantProfile.update({
+        where: { id: profile.id },
+        data: {
+          alias,
+          aliasKey: aliasKey(alias),
+          avatarId: data.avatarId,
+          budgetTier: data.budgetTier,
+          giftHints: data.giftHints,
+          giftExclusions: data.giftExclusions,
+          interests: { create: data.interests.map((interestSlug) => ({ interestSlug })) },
+        },
+      }),
+    ]);
+  } catch (err) {
+    // Kontrol ile yazma arasında başkası aynı rumuzu aldıysa.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      return { ok: false, message: ALIAS_TAKEN, fieldErrors: { alias: ALIAS_TAKEN }, step: 1 };
+    }
+    throw err;
+  }
+  return { ok: true };
 }

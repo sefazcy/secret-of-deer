@@ -22,6 +22,7 @@ Geliştirmede `MAIL_MODE="console"` iken OTP kodları e-posta yerine **terminale
 | `npm run typecheck` / `lint` / `test` | Tip kontrolü, ESLint, birim testler (node:test + tsx) |
 | `npm run db:migrate` / `db:seed` / `db:studio` / `db:reset` | Prisma |
 | `npm run secrets` | Yeni rastgele anahtarlar üretir |
+| `npm run dev:phase -- MATCHED` | (Yalnızca geliştirme) Fazı değiştirir: `REGISTRATION`, `MATCHED` (eşleştirmeyi çalıştırır), `EVENT_DAY` |
 | `GET /api/health` | Uygulama + veritabanı sağlık kontrolü |
 
 ## Klasör yapısı
@@ -44,8 +45,9 @@ src/
   features/              # Alan modülleri: şema, sorgu, aksiyon, bileşen bir arada
     auth/                #   OTP ve oturum (schemas.ts)
     profile/             #   profil şemaları, rumuz üretici
-    matching/            #   eşleştirme algoritması + testleri
+    matching/            #   eşleştirme algoritması + testleri, service.ts (DB'ye yazma)
     event/               #   etkinlik ayarları sorguları, geri sayım
+    panel/               #   öğrenci paneli: faz bazlı veri, eşleşme kartı, QR bilet
   components/            # Paylaşılan UI (ui/, layout/, providers/)
   lib/                   # Altyapı: db, env, crypto, session, mail, ticket, constants
   generated/prisma/      # Prisma client çıktısı (git'e girmez)

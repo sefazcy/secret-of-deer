@@ -3,6 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Countdown } from "@/features/event/countdown";
 import { getPublicEventInfo } from "@/features/event/queries";
 import { EVENT_SUMMARY } from "@/lib/constants";
+import { formatDayLong } from "@/lib/format";
 
 const STEPS = [
   { emoji: "✉️", title: "Hacettepe e-postanla doğrula", text: "Okul adresine gelen 6 haneli kodla kaydını tamamla." },
@@ -39,15 +40,6 @@ const FAQ = [
     a: "Bir arkadaşın hediyesiz kalmasın diye katılım taahhüdü istiyoruz. Gelemeyeceksen lütfen en kısa sürede organizasyon ekibine haber ver.",
   },
 ];
-
-function formatDate(iso: string) {
-  return new Intl.DateTimeFormat("tr-TR", {
-    day: "numeric",
-    month: "long",
-    weekday: "long",
-    timeZone: "Europe/Istanbul",
-  }).format(new Date(iso));
-}
 
 export default async function HomePage() {
   const event = await getPublicEventInfo();
@@ -122,7 +114,7 @@ export default async function HomePage() {
           {[
             { label: "Bütçe", value: EVENT_SUMMARY.budget },
             { label: "Lokasyon", value: event?.location ?? EVENT_SUMMARY.locations },
-            { label: "Tarih", value: event ? formatDate(event.eventStartsAt) : "Yakında duyurulacak" },
+            { label: "Tarih", value: event ? formatDayLong(event.eventStartsAt) : "Yakında duyurulacak" },
             { label: "Saat", value: EVENT_SUMMARY.hours },
           ].map((item) => (
             <Card key={item.label}>

@@ -13,3 +13,19 @@ export function generateTicketCode(): string {
 export function normalizeTicketCode(input: string): string {
   return input.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
+
+/** QR içeriği: sürüm önekli, böylece check-in ekranı alakasız QR kodlarını ayırt eder. */
+const QR_PREFIX = "BG1:";
+
+export function ticketQrPayload(code: string): string {
+  return `${QR_PREFIX}${code}`;
+}
+
+/** QR okumasından ya da elle girişten bilet kodunu çıkarır; geçersizse null. */
+export function parseTicketInput(text: string): string | null {
+  const raw = text.trim().toUpperCase();
+  const body = raw.startsWith(QR_PREFIX) ? raw.slice(QR_PREFIX.length) : raw;
+  const code = normalizeTicketCode(body);
+  if (code.length !== TICKET_LENGTH) return null;
+  return [...code].every((ch) => TICKET_ALPHABET.includes(ch)) ? code : null;
+}

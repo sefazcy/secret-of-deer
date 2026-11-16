@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useTransition, type ReactNode } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useId, useState, useTransition, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,7 +16,7 @@ import {
   type BudgetTierKey,
   type InterestSlug,
 } from "@/lib/constants";
-import { checkAlias, createProfile, suggestAlias } from "../actions";
+import { checkAlias, createProfile, suggestAlias, updateProfile } from "../actions";
 import { aliasStepSchema, giftNotesStepSchema, interestsStepSchema } from "../schemas";
 import { Avatar } from "./avatar";
 
@@ -34,14 +36,29 @@ function collectErrors(issues: { path: PropertyKey[]; message: string }[]): Erro
   return out;
 }
 
-export function ProfileWizard() {
+export type WizardInitial = {
+  alias: string;
+  avatarId: string;
+  interests: InterestSlug[];
+  budgetTier: BudgetTierKey;
+  giftHints: string;
+  giftExclusions: string;
+};
+
+/**
+ * @param mode "create": yeni profil (/profil-olustur). "edit": panelden düzenleme, `initial` ile dolu gelir.
+ */
+export function ProfileWizard({ mode = "create", initial }: { mode?: "create" | "edit"; initial?: WizardInitial }) {
+  const router = useRouter();
+  // Sabit id yerine useId: Next, önceki rotaları gizli olarak DOM'da tuttuğu için sabit id'ler çakışır.
+  const uid = useId();
   const [step, setStep] = useState<Step>(1);
-  const [alias, setAlias] = useState("");
-  const [avatarId, setAvatarId] = useState<AvatarId | "">("");
-  const [interests, setInterests] = useState<InterestSlug[]>([]);
-  const [budgetTier, setBudgetTier] = useState<BudgetTierKey | "">("");
-  const [giftHints, setGiftHints] = useState("");
-  const [giftExclusions, setGiftExclusions] = useState("");
+  const [alias, setAlias] = useState(initial?.alias ?? "");
+  const [avatarId, setAvatarId] = useState<AvatarId | "">((initial?.avatarId as AvatarId) ?? "");
+  const [interests, setInterests] = useState<InterestSlug[]>(initial?.interests ?? []);
+  const [budgetTier, setBudgetTier] = useState<BudgetTierKey | "">(initial?.budgetTier ?? "");
+  const [giftHints, setGiftHints] = useState(initial?.giftHints ?? "");
+  const [giftExclusions, setGiftExclusions] = useState(initial?.giftExclusions ?? "");
   const [errors, setErrors] = useState<Errors>({});
   const [isPending, startTransition] = useTransition();
 
@@ -87,16 +104,22 @@ export function ProfileWizard() {
   function submit() {
     const local = giftNotesStepSchema.safeParse({ giftHints, giftExclusions });
     if (!local.success) return showErrors(collectErrors(local.error.issues));
+    const input = {
+      alias,
+      avatarId: avatarId as AvatarId,
+      interests,
+      budgetTier: budgetTier as BudgetTierKey,
+      giftHints,
+      giftExclusions,
+    };
     startTransition(async () => {
-      // Başarılı olursa sunucu /panel'e yönlendirir; buraya yalnızca hata döner.
-      const res = await createProfile({
-        alias,
-        avatarId: avatarId as AvatarId,
-        interests,
-        budgetTier: budgetTier as BudgetTierKey,
-        giftHints,
-        giftExclusions,
-      });
+      // Oluşturmada başarılıysa sunucu /panel'e yönlendirir; buraya yalnızca hata döner.
+      const res = mode === "edit" ? await updateProfile(input) : await createProfile(input);
+      if (res?.ok) {
+        toast.success("Profilin güncellendi ✨");
+        router.push("/panel");
+        return;
+      }
       if (res && !res.ok) {
         if (res.step && res.step !== step) setStep(res.step);
         showErrors(res.fieldErrors ?? {});
@@ -114,18 +137,27 @@ export function ProfileWizard() {
 
   return (
     <div>
-      <Progress step={step} />
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
+          <Progress step={step} />
+        </div>
+        {mode === "edit" && (
+          <Link href="/panel" className="-mt-1 shrink-0 text-sm text-ink-muted underline underline-offset-4">
+            Vazgeç
+          </Link>
+        )}
+      </div>
       <h2 className="mt-4 text-lg font-semibold">{STEP_TITLES[step]}</h2>
 
       {step === 1 && (
         <div className="mt-5 space-y-6">
           <div className="space-y-2">
-            <label htmlFor="alias" className="block font-semibold">
+            <label htmlFor={`${uid}alias`} className="block font-semibold">
               Rumuzun
             </label>
             <div className="flex gap-2">
               <input
-                id="alias"
+                id={`${uid}alias`}
                 value={alias}
                 onChange={(e) => {
                   setAlias(e.target.value);
@@ -136,7 +168,7 @@ export function ProfileWizard() {
                 autoCapitalize="words"
                 placeholder="ör. Beytepe Tilkisi"
                 aria-invalid={!!errors.alias || undefined}
-                aria-describedby="alias-help"
+                aria-describedby={`${uid}alias-help`}
                 disabled={isPending}
                 className={`h-12 min-w-0 flex-1 rounded-xl border-2 bg-surface px-4 text-base outline-none transition focus:border-gold ${
                   errors.alias ? "border-holly" : "border-border"
@@ -153,7 +185,7 @@ export function ProfileWizard() {
                 🎲
               </button>
             </div>
-            <FieldHint id="alias-help" error={errors.alias}>
+            <FieldHint id={`${uid}alias-help`} error={errors.alias}>
               Herkes seni bu isimle görecek; gerçek adını kullanma. {alias.trim().length}/{TEXT_LIMITS.aliasMax}
             </FieldHint>
           </div>
@@ -325,7 +357,9 @@ export function ProfileWizard() {
             onBack={() => goTo(2)}
             onNext={submit}
             disabled={isPending}
-            nextLabel={isPending ? "Oluşturuluyor…" : "Profilimi oluştur 🎄"}
+            nextLabel={
+              isPending ? "Kaydediliyor…" : mode === "edit" ? "Değişiklikleri kaydet" : "Profilimi oluştur 🎄"
+            }
           />
         </div>
       )}
@@ -407,11 +441,13 @@ function TextArea({
   error?: string;
   disabled?: boolean;
 }) {
+  const uid = useId();
+  const fid = `${uid}${id}`;
   const near = value.length > max * 0.9;
   return (
     <div className="space-y-2">
       <div className="flex items-baseline justify-between">
-        <label htmlFor={id} className="font-semibold">
+        <label htmlFor={fid} className="font-semibold">
           {label}
         </label>
         <span className={`text-sm tabular-nums ${near ? "text-holly" : "text-ink-muted"}`}>
@@ -419,20 +455,20 @@ function TextArea({
         </span>
       </div>
       <textarea
-        id={id}
+        id={fid}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         maxLength={max}
         rows={3}
         placeholder={placeholder}
         aria-invalid={!!error || undefined}
-        aria-describedby={`${id}-help`}
+        aria-describedby={`${fid}-help`}
         disabled={disabled}
         className={`w-full resize-none rounded-xl border-2 bg-surface px-4 py-3 text-base outline-none transition focus:border-gold ${
           error ? "border-holly" : "border-border"
         }`}
       />
-      <FieldHint id={`${id}-help`} error={error}>
+      <FieldHint id={`${fid}-help`} error={error}>
         {hint}
       </FieldHint>
     </div>
