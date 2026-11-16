@@ -1,0 +1,151 @@
+// Beytepe Geyiği — veritabanı şeması
+//
+// KVKK gereği veriler iki katmanda tutulur ve aralarında FOREIGN KEY YOKTUR:
+//   1. Kimlik katmanı  (AuthIdentity)       → e-posta (şifreli), OTP, onaylar
+//   2. Anonim katman   (ParticipantProfile) → rumuz, ilgi alanları, bilet, eşleşme
+//
+// Köprü: AuthIdentity.profileToken (rastgele) → HMAC(PROFILE_LINK_SECRET) → ParticipantProfile.identityRef
+// Veritabanı tek başına sızsa bile, sunucu sırrı olmadan profil ↔ e-posta eşleştirilemez.
+//
+// Geliştirme: SQLite. Üretim: PostgreSQL için `provider = "postgresql"` yapıp
+// src/lib/db.ts içindeki adapter'ı @prisma/adapter-pg ile değiştirmeniz yeterli (README).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ─────────────────────────────────────────────────────────────
+// 1. KİMLİK KATMANI
+// ─────────────────────────────────────────────────────────────
+
+model AuthIdentity {
+  id String @id @default(uuid())
+
+  /// HMAC-SHA256(EMAIL_HASH_PEPPER, normalize(email)) — mükerrer kaydı önler, geri çözülemez.
+  emailHash String @unique @map("email_hash")
+
+  /// AES-256-GCM ile şifrelenmiş e-posta ("iv.tag.ciphertext", base64url).
+  /// Yalnızca OTP ve eşleşme bildirimi gönderilirken çözülür.
+  encryptedEmail String @map("encrypted_email")
+
+  /// OTP kodunun kendisi değil, HMAC özeti saklanır.
+  otpHash        String?   @map("otp_hash")
+  otpExpiresAt   DateTime? @map("otp_expires_at")
+  otpAttempts    Int       @default(0) @map("otp_attempts")
+  otpLastSentAt  DateTime? @map("otp_last_sent_at")
+
+  isVerified Boolean @default(false) @map("is_verified")
+
+  /// Anonim profile köprü kuran rastgele anahtar (profilde bunun HMAC'i durur).
+  profileToken String @unique @map("profile_token")
+
+  kvkkAcceptedAt   DateTime? @map("kvkk_accepted_at")
+  pledgeAcceptedAt DateTime? @map("pledge_accepted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("auth_identities")
+}
+
+// ─────────────────────────────────────────────────────────────
+// 2. ANONİM PROFİL VE ETKİNLİK KATMANI
+// ─────────────────────────────────────────────────────────────
+
+enum BudgetTier {
+  TIER_300_450
+  TIER_450_600
+}
+
+model ParticipantProfile {
+  id String @id @default(uuid())
+
+  /// HMAC(PROFILE_LINK_SECRET, AuthIdentity.profileToken). Joker profillerde null.
+  identityRef String? @unique @map("identity_ref")
+
+  alias    String @unique
+  avatarId String @map("avatar_id")
+
+  budgetTier     BudgetTier @map("budget_tier")
+  giftHints      String     @default("") @map("gift_hints") // max 250 (Zod ile doğrulanır)
+  giftExclusions String     @default("") @map("gift_exclusions") // max 150
+
+  isGiftReady Boolean @default(false) @map("is_gift_ready")
+
+  /// 6 haneli alfanümerik bilet kodu — QR içeriği de bu koddur.
+  ticketCode  String    @unique @map("ticket_code")
+  isCheckedIn Boolean   @default(false) @map("is_checked_in")
+  checkedInAt DateTime? @map("checked_in_at")
+
+  /// Tek sayılı bütçe grubunu tamamlamak için eklenen gönüllü.
+  isJoker Boolean @default(false) @map("is_joker")
+
+  interests     ProfileInterest[]
+  givingMatch   Match?            @relation("giver")
+  receivingMatch Match?           @relation("receiver")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([budgetTier])
+  @@map("participant_profiles")
+}
+
+/// İlgi alanları ayrı tabloda: SQLite'ta dizi tipi yok, PostgreSQL'e geçişte de aynen çalışır.
+/// `interestSlug` değerleri src/lib/constants.ts içindeki INTERESTS listesinden gelir.
+model ProfileInterest {
+  profileId    String             @map("profile_id")
+  interestSlug String             @map("interest_slug")
+  profile      ParticipantProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@id([profileId, interestSlug])
+  @@index([interestSlug])
+  @@map("profile_interests")
+}
+
+// ─────────────────────────────────────────────────────────────
+// 3. EŞLEŞME
+// ─────────────────────────────────────────────────────────────
+
+/// Yönlü atama: giver → receiver. Herkes tam olarak bir kez verir ve bir kez alır,
+/// kimse kendisiyle eşleşmez. Karşılıklı olmak zorunda değildir.
+model Match {
+  id                   String             @id @default(uuid())
+  giverProfileId       String             @unique @map("giver_profile_id")
+  receiverProfileId    String             @unique @map("receiver_profile_id")
+  commonInterestsCount Int                @map("common_interests_count")
+  giver                ParticipantProfile @relation("giver", fields: [giverProfileId], references: [id], onDelete: Cascade)
+  receiver             ParticipantProfile @relation("receiver", fields: [receiverProfileId], references: [id], onDelete: Cascade)
+  createdAt            DateTime           @default(now()) @map("created_at")
+
+  @@map("matches")
+}
+
+// ─────────────────────────────────────────────────────────────
+// 4. ETKİNLİK AYARLARI (tek satır, id = 1)
+// ─────────────────────────────────────────────────────────────
+
+enum EventPhase {
+  REGISTRATION // Faz 1: kayıt açık, eşleşme yok
+  MATCHED      // Faz 2: eşleşmeler duyuruldu
+  EVENT_DAY    // Faz 3: bilet modu
+  CLOSED       // Etkinlik bitti, veriler imha edildi
+}
+
+model EventSettings {
+  id                    Int        @id @default(1)
+  phase                 EventPhase @default(REGISTRATION)
+  registrationClosesAt  DateTime   @map("registration_closes_at")
+  eventStartsAt         DateTime   @map("event_starts_at")
+  location              String
+  matchesFinalizedAt    DateTime?  @map("matches_finalized_at")
+  dataPurgedAt          DateTime?  @map("data_purged_at")
+  updatedAt             DateTime   @updatedAt @map("updated_at")
+
+  @@map("event_settings")
+}

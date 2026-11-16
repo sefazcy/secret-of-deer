@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+/* Kış & kampüs teması — gece mavisi, kırık beyaz, yılbaşı kırmızısı ve altın vurgular */
+:root {
+  --bg: #f7f4ee;
+  --surface: #ffffff;
+  --surface-muted: #efeae0;
+  --ink: #13213d;
+  --ink-muted: #55607a;
+  --border: #e2dccf;
+  --night: #13213d;
+  --night-soft: #1e3260;
+  --pine: #1f4d3a;
+  --holly: #c22f3a;
+  --holly-ink: #ffffff;
+  --gold: #c9971f;
+  --snow: #ffffff;
+  --focus: #c9971f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c1527;
+    --surface: #13213d;
+    --surface-muted: #1a2a4b;
+    --ink: #f3efe6;
+    --ink-muted: #a9b3c9;
+    --border: #2a3b60;
+    --night: #0a1222;
+    --night-soft: #1e3260;
+    --pine: #3f8a68;
+    --holly: #e0525b;
+    --gold: #e3b84a;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-border: var(--border);
+  --color-night: var(--night);
+  --color-night-soft: var(--night-soft);
+  --color-pine: var(--pine);
+  --color-holly: var(--holly);
+  --color-holly-ink: var(--holly-ink);
+  --color-gold: var(--gold);
+  --color-snow: var(--snow);
+  --font-sans: var(--font-sans);
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
