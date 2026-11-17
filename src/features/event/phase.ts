@@ -13,7 +13,7 @@ import type { Prisma, PrismaClient } from "../../generated/prisma/client";
  * - PostgreSQL: UPDATE satır kilidi alır ve transaction bitene kadar tutar. Eşzamanlı bir faz
  *   geçişi bu satırı güncellemek için bekler; READ COMMITTED'da beklemeden sonra WHERE koşulu
  *   satırın yeni hâli üzerinde yeniden değerlendirilir, dolayısıyla faz değiştiyse 0 satır döner.
- * - SQLite: ilk yazma veritabanı yazma kilidini alır; Prisma adapter'ı da transaction'ları sıralar.
+ * - Testlerdeki PGlite tek oturumludur; transaction'lar zaten sırayla çalışır.
  *
  * Böylece "faz uygun mu?" kontrolü ile asıl yazma aynı kilit altında, bölünmez olur.
  */

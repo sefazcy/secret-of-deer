@@ -2,14 +2,14 @@
 
 Hacettepe Üniversitesi öğrencilerine özel, ilgi alanı + bütçe bazlı eşleştiren, QR biletli yılbaşı hediyeleşme platformu. Ürün gereksinimleri: [`CLAUDE.md`](CLAUDE.md).
 
-**Yığın:** Next.js 16 (App Router, Cache Components, Turbopack) · React 19 · TypeScript · Tailwind CSS 4 · Prisma 7 (SQLite → PostgreSQL) · Zod 4 · iron-session · Nodemailer · sonner · qrcode.react
+**Yığın:** Next.js 16 (App Router, Cache Components, Turbopack) · React 19 · TypeScript · Tailwind CSS 4 · Prisma 7 (PostgreSQL · @prisma/adapter-pg) · Zod 4 · iron-session · Nodemailer · sonner · qrcode.react
 
 ## Hızlı başlangıç
 
 ```bash
 npm install                 # postinstall → prisma generate
-cp .env.example .env        # ardından: npm run secrets çıktısını .env'e yapıştır, şifreleri doldur
-npm run db:migrate          # şemayı uygula (dev.db oluşur)
+cp .env.example .env        # ardından: npm run secrets çıktısını .env'e yapıştır, şifreleri ve DATABASE_URL'i doldur
+npm run db:migrate          # şemayı PostgreSQL'e uygula (yerel Postgres ya da ücretsiz bir Neon/Supabase dalı)
 npm run db:seed             # etkinlik ayarları  (demo profiller için: SEED_DEMO=1 npm run db:seed)
 npm run dev                 # http://localhost:3000
 ```
@@ -19,8 +19,9 @@ Geliştirmede `MAIL_MODE="console"` iken OTP kodları e-posta yerine **terminale
 | Komut | Açıklama |
 | --- | --- |
 | `npm run dev` / `build` / `start` | Next.js |
-| `npm run typecheck` / `lint` / `test` | Tip kontrolü, ESLint, birim + entegrasyon testleri (node:test + tsx; entegrasyon testleri her seferinde geçici bir SQLite veritabanı kurar, `dev.db`'ye dokunmaz) |
-| `npm run db:migrate` / `db:seed` / `db:studio` / `db:reset` | Prisma |
+| `npm run typecheck` / `lint` / `test` | Tip kontrolü, ESLint, birim + entegrasyon testleri (node:test + tsx; entegrasyon testleri her test için süreç içi geçici bir PostgreSQL (PGlite) açar ve uygulamayla aynı `@prisma/adapter-pg` sürücüsünü kullanır; `DATABASE_URL`'e dokunmaz. `TEST_DATABASE_URL` verilirse o sunucuda geçici şemalarla çalışır) |
+| `npm run db:migrate` / `db:seed` / `db:studio` / `db:reset` | Prisma (geliştirme) |
+| `npm run db:deploy` | Üretim veritabanına bekleyen migration'ları uygular (`prisma migrate deploy`) |
 | `npm run secrets` | Yeni rastgele anahtarlar üretir |
 | `npm run dev:phase -- MATCHED` | (Yalnızca geliştirme) Fazı değiştirir: `REGISTRATION`, `MATCHED` (eşleştirmeyi çalıştırır), `EVENT_DAY` |
 | `GET /api/health` | Uygulama + veritabanı sağlık kontrolü |
@@ -76,7 +77,7 @@ src/
 - **Ekip girişi (`/admin/giris`):** `ADMIN_PASSWORD` → tüm yönetim paneli, `CHECKIN_PASSWORD` → yalnızca `/admin/check-in`. Şifreler sabit zamanlı karşılaştırılır; IP başına 15 dakikada 10 deneme (bkz. "Hız sınırlayıcıyı ortak depoya taşımak"). Rol, şifreli oturum çerezinde tutulur; `proxy.ts` yalnızca iyimser kontrol yapar, asıl yetki her sayfa ve server action'da `requireStaff()` ile sunucuda denetlenir.
 - **Admin:** Eşleşme listesi gösterilmez, sadece grup istatistikleri. Tek istisna jokerler: ekip üyesi oldukları için hediye alacakları kişi panelde görünür.
 - **Bildirim e-postası:** Yalnızca "eşleşmen hazır, panele gir" der; kimin kime çıktığı e-postada yer almaz. Bağlantı için `SITE_URL` gerekir.
-- **İmha:** "Etkinliği sonlandır" iki aşamalı onay ister (uyarı + `VERİLERİ İMHA ET` yazımı; sunucu da ifadeyi doğrular). Tek transaction'da `auth_identities`, `participant_profiles`, `profile_interests` ve `matches` tamamen silinir, faz `CLOSED` olur, ardından `VACUUM` ile silinen satırların dosyadaki izi temizlenir.
+- **İmha:** "Etkinliği sonlandır" iki aşamalı onay ister (uyarı + `VERİLERİ İMHA ET` yazımı; sunucu da ifadeyi doğrular). Tek transaction'da `auth_identities`, `participant_profiles`, `profile_interests` ve `matches` tamamen silinir, faz `CLOSED` olur, ardından bu tablolarda `VACUUM FULL` ile silinen satırların disk üzerindeki izi temizlenir. Not: Barındırma sağlayıcısının otomatik yedekleri ve geri dönüş (PITR / dal geçmişi) kayıtları, sağlayıcının saklama süresi dolana kadar eski verileri içerebilir; KVKK aydınlatma metni ve sağlayıcı ayarları buna göre yapılandırılmalı (bkz. "Canlıya alma").
 - **Oturum iptali:** Çerezde oturumun açıldığı dönem (`epoch`) tutulur; `event_settings.session_epoch` imhada 1 artar. Dönemi eşleşmeyen (imhadan önce açılmış ya da dönem bilgisi olmayan eski) tüm öğrenci ve ekip oturumları sunucu tarafında geçersiz sayılır (`getCurrentIdentity()`, `getStaffRole()`).
 - **Denetim kaydı (`audit_logs`):** Eşleştirmenin kesinleşmesi, bilet modunun açılması ve veri imhası; yalnızca işlem türü, zaman damgası ve sayısal özet (`profiles=12 matches=12`) olarak yazılır. Kişisel veri içermez ve imhada silinmez.
 - **Loglar:** Hiçbir log satırına OTP, şifre, oturum çerezi ya da düz e-posta yazılmaz. Hata loglarında hata mesajı değil yalnızca türü/kodu yer alır (`lib/log.ts → safeErrorSummary`), çünkü SMTP hataları alıcı adresini içerebilir. Tek istisna, yalnızca geliştirmede çalışan konsol e-posta modudur (maskeli adres + kod).
@@ -99,7 +100,7 @@ await tx.eventSettings.updateMany({ where: { id: 1, phase: { in: allowed } }, da
 // 0 satır → PhaseError (yanlış faz ya da ayar satırı yok)
 ```
 
-Faz geçişleri de aynı kalıpla koşulludur: `updateMany({ where: { id: 1, phase: "MATCHED" }, data: { phase: "EVENT_DAY" } })`. PostgreSQL'de bu UPDATE satır kilidi alıp transaction sonuna kadar tutar; SQLite'ta yazma kilidi ve Prisma adapter'ının transaction sıralaması aynı garantiyi verir. Sonuçlar:
+Faz geçişleri de aynı kalıpla koşulludur: `updateMany({ where: { id: 1, phase: "MATCHED" }, data: { phase: "EVENT_DAY" } })`. PostgreSQL'de bu UPDATE satır kilidi alıp transaction sonuna kadar tutar; eşzamanlı bir yazma kilidi bekler ve (READ COMMITTED'da) koşulu satırın güncel hâli üzerinde yeniden değerlendirir. Sonuçlar:
 
 - Eşleştirme, faz kilidini aldıktan sonra adayları okur ve yazar: araya yeni profil ya da joker **sızamaz**, aynı anda iki "kesinleştir"den yalnızca biri geçer.
 - `event_settings` (id = 1) satırı yoksa hiçbir işlem varsayılan olarak `REGISTRATION` kabul edilmez; OTP, profil ve yönetim aksiyonları açık bir hatayla reddedilir (`npm run db:seed`).
@@ -138,8 +139,40 @@ Anahtarlar `rl:<sınırlayıcı>:<anahtar>` biçimindedir; e-posta bazlı anahta
 
 `src/features/matching/algorithm.ts`: Katılımcılar bütçe gruplarına ayrılır. Her grupta köşegeni (kendine atama) yasaklı Macar algoritmasıyla toplam ortak ilgi alanı maksimize edilir (O(n³)). Atama tek yönlüdür. Girdi önce karıştırıldığı için eşit skorlarda sonucu kayıt sırası belirlemez. Testler, sonucu kaba kuvvetle bulunan optimumla karşılaştırır.
 
-## PostgreSQL'e geçiş
+## Canlıya alma (Vercel + Neon / Supabase)
 
-1. `prisma/schema.prisma` → `provider = "postgresql"`
-2. `npm i @prisma/adapter-pg pg` ve `src/lib/db.ts` içinde `PrismaBetterSqlite3` yerine `PrismaPg`
-3. `.env` → `DATABASE_URL="postgresql://..."`, ardından eski SQLite migration'larını silip `npm run db:migrate -- --name init`
+**1. Veritabanı (Neon).** Proje `neon.ts` ile Neon'a bağlıdır (org/proje/dal: `production`). Değişkenleri yerel `.env`'e çekmek için:
+
+```bash
+npm i -g neon@latest
+neon login                 # tarayıcıda oturum
+neon env pull              # ya da: neon deploy (neon.ts'i uygular + değişkenleri çeker)
+```
+
+| Değişken | Değer | Kim kullanır |
+| --- | --- | --- |
+| `DATABASE_URL` | Neon havuzlu adres (`…-pooler.…neon.tech/…?sslmode=require`) | Uygulama: `src/lib/db.ts` (`pg` havuzu + `@prisma/adapter-pg`) |
+| `DATABASE_URL_UNPOOLED` | Neon doğrudan adres | Prisma CLI: migrate, seed (`prisma.config.ts`; elle `DIRECT_URL` verilirse o önceliklidir) |
+
+Supabase kullanılacaksa: `DATABASE_URL` = transaction pooler (`:6543/postgres?pgbouncer=true`), `DIRECT_URL` = doğrudan bağlantı (`:5432`).
+
+Uygulama `sslmode=require` adresini sertifika ve ana makine doğrulamalı `verify-full` olarak kullanır. Vercel'de havuz `@vercel/functions` → `attachDatabasePool` ile Fluid compute'a kaydedilir (yalnızca Vercel çalışma zamanında).
+
+**2. Şema ve başlangıç verisi** (`.env` Neon değişkenlerini içerirken):
+
+```bash
+npm run db:deploy   # migration'ları DATABASE_URL_UNPOOLED üzerinden uygular
+npm run db:seed     # event_settings satırı (zorunlu; yoksa tüm işlemler reddedilir)
+```
+
+> `next build`, ana sayfayı önceden render ederken veritabanını okur. Vercel'deki ilk build'den **önce** migration uygulanmış olmalıdır.
+
+Sonraki şema değişikliklerinde geliştirmede `npm run db:migrate -- --name <ad>` ile migration üretip commit edin, deploy öncesi `npm run db:deploy` çalıştırın.
+
+**3. Vercel.** Projeyi içe aktarın; build komutu `package.json`'daki `prisma generate && next build`'dir. *Settings → Environment Variables* (Production) altına şunları girin (Vercel–Neon entegrasyonu ilk ikisini otomatik ekleyebilir): `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `SESSION_SECRET`, `EMAIL_ENCRYPTION_KEY`, `EMAIL_HASH_PEPPER`, `PROFILE_LINK_SECRET` (`npm run secrets`), `ADMIN_PASSWORD`, `CHECKIN_PASSWORD`, `SITE_URL` (`https://…`), `MAIL_MODE=smtp`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`. Eksik ya da hatalı bir değer varsa sunucu açılmaz ve Vercel loglarında yalnızca değişken adı görünür (bkz. "Ortam doğrulaması"). İsteğe bağlı: `DATABASE_POOL_MAX` (örnek başına havuz boyutu, varsayılan 5).
+
+**4. Notlar.**
+- `EMAIL_ENCRYPTION_KEY`, `EMAIL_HASH_PEPPER` ve `PROFILE_LINK_SECRET` canlıya çıktıktan sonra **değiştirilmemeli**; değişirse kayıtlı e-postalar çözülemez ve profiller kimliklere bağlanamaz.
+- Vercel birden çok örnek çalıştırır: süreç içi hız sınırı sayaçları örnekler arasında paylaşılmaz. Kesin sınır için "Hız sınırlayıcıyı ortak depoya taşımak" bölümündeki gibi Redis (ör. Upstash) bağlayın.
+- Vercel `x-forwarded-for` başlığını kendisi ayarlar; IP bazlı sınırlar bu başlığa güvenir.
+- Veri imhasından sonra sağlayıcı yedekleri ve PITR geçmişi için saklama süresini kısa tutun (Neon: *history retention*, Supabase: yedekler) ya da imha sonrası veritabanını/dalı tamamen silin.

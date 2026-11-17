@@ -11,7 +11,10 @@ const optionalString = z.preprocess((v) => (typeof v === "string" && v.trim() ==
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
-  DATABASE_URL: z.string().min(1, "DATABASE_URL zorunlu"),
+  DATABASE_URL: z
+    .string()
+    .min(1, "DATABASE_URL zorunlu")
+    .regex(/^postgres(ql)?:\/\//, "DATABASE_URL bir PostgreSQL adresi olmalı (postgresql://...)"),
   SESSION_SECRET: z.string().min(32, "SESSION_SECRET en az 32 karakter olmalı"),
   EMAIL_ENCRYPTION_KEY: z
     .string()

@@ -6,7 +6,7 @@ import * as c from "./crypto";
 // Testler gerçek .env'e dokunmasın diye geçici anahtarlar. (env() ilk çağrıda okunduğu için
 // import'tan sonra atamak yeterli.)
 Object.assign(process.env, {
-  DATABASE_URL: "file:./test.db",
+  DATABASE_URL: "postgresql://unused@localhost:5432/unused",
   SESSION_SECRET: randomBytes(32).toString("base64url"),
   EMAIL_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
   EMAIL_HASH_PEPPER: randomBytes(32).toString("base64url"),

@@ -204,10 +204,12 @@ export async function purgeAllData(confirmation: string): Promise<ActionResult> 
     return phaseFailure(err, "İmha yapılamadı.");
   }
 
-  // Silinen satırlar veritabanı dosyasının boş sayfalarında kalabilir; VACUUM dosyayı yeniden yazar.
-  // (SQLite ve PostgreSQL'de aynı komut; transaction dışında çalışmalı.)
+  // PostgreSQL'de silinen satırlar (ölü tuple'lar) tablo dosyalarında kalır; VACUUM FULL tabloları
+  // yeniden yazarak bu izleri fiziksel olarak temizler. Transaction dışında çalışmalı.
   try {
-    await db.$executeRawUnsafe("VACUUM");
+    await db.$executeRawUnsafe(
+      'VACUUM FULL "auth_identities", "participant_profiles", "profile_interests", "matches"',
+    );
   } catch (err) {
     console.error(`[imha] VACUUM çalıştırılamadı (${safeErrorSummary(err)})`);
   }

@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
  * `env()` ilk çağrıda okunduğu için bu modülün test dosyasında ilk import edilmesi yeterli.
  */
 export const TEST_ENV = {
-  DATABASE_URL: "file:./unused-test.db",
+  DATABASE_URL: "postgresql://unused@localhost:5432/unused",
   SESSION_SECRET: randomBytes(32).toString("base64url"),
   EMAIL_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
   EMAIL_HASH_PEPPER: randomBytes(32).toString("base64url"),

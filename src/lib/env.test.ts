@@ -7,7 +7,7 @@ import { isConsoleMailAllowed } from "./mail";
 function baseEnv(): Record<string, string | undefined> {
   return {
     NODE_ENV: "development",
-    DATABASE_URL: "file:./dev.db",
+    DATABASE_URL: "postgresql://user:pass@localhost:5432/beytepe",
     SESSION_SECRET: randomBytes(32).toString("base64url"),
     EMAIL_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
     EMAIL_HASH_PEPPER: randomBytes(32).toString("base64url"),

@@ -7,8 +7,8 @@
 // Köprü: AuthIdentity.profileToken (rastgele) → HMAC(PROFILE_LINK_SECRET) → ParticipantProfile.identityRef
 // Veritabanı tek başına sızsa bile, sunucu sırrı olmadan profil ↔ e-posta eşleştirilemez.
 //
-// Geliştirme: SQLite. Üretim: PostgreSQL için `provider = "postgresql"` yapıp
-// src/lib/db.ts içindeki adapter'ı @prisma/adapter-pg ile değiştirmeniz yeterli (README).
+// Veritabanı: PostgreSQL (üretim: Neon / Supabase). Bağlantı adresleri prisma.config.ts
+// (CLI: DIRECT_URL ?? DATABASE_URL) ve src/lib/db.ts (uygulama: DATABASE_URL, @prisma/adapter-pg) içinde.
 
 generator client {
   provider = "prisma-client"
@@ -16,7 +16,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ model ParticipantProfile {
   @@map("participant_profiles")
 }
 
-/// İlgi alanları ayrı tabloda: SQLite'ta dizi tipi yok, PostgreSQL'e geçişte de aynen çalışır.
+/// İlgi alanları ayrı tabloda: indekslenebilir ve sorgulanabilir (etiket bazlı istatistik, eşleştirme).
 /// `interestSlug` değerleri src/lib/constants.ts içindeki INTERESTS listesinden gelir.
 model ProfileInterest {
   profileId    String             @map("profile_id")
@@ -149,7 +149,7 @@ model EventSettings {
   dataPurgedAt          DateTime?  @map("data_purged_at")
   /// Faz kilidi: fazı koşul alan her yazma işlemi transaction içinde bu satırı
   /// `updateMany({ where: { id: 1, phase: … } })` ile günceller. Satır kilidi (PostgreSQL)
-  /// ya da yazma kilidi (SQLite) transaction bitene kadar faz geçişlerini bekletir.
+  /// transaction bitene kadar tutulur ve eşzamanlı faz geçişlerini bekletir.
   lockVersion           Int        @default(0) @map("lock_version")
   /// Oturum dönemi: veri imhasında artar; eski dönemden kalan tüm çerezler geçersiz olur.
   sessionEpoch          Int        @default(0) @map("session_epoch")
