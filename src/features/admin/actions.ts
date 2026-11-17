@@ -2,28 +2,29 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { refresh, updateTag } from "next/cache";
-import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { decryptEmail, deriveIdentityRef } from "@/lib/crypto";
+import { safeErrorSummary } from "@/lib/log";
 import { sendMatchReadyMail } from "@/lib/mail";
-import { RateLimiter } from "@/lib/rate-limit";
-import { getSession, type StaffRole } from "@/lib/session";
-import { generateTicketCode } from "@/lib/ticket";
+import { RateLimiter, formatRetryAfter } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/request";
+import { bindSessionEpoch, getSession, getSessionEpoch, type StaffRole } from "@/lib/session";
 import { BUDGET_TIER_KEYS, type BudgetTierKey } from "@/lib/constants";
+import { MISSING_SETTINGS_MESSAGE, PhaseError } from "@/features/event/phase";
 import { EVENT_SETTINGS_TAG, PARTICIPANT_COUNT_TAG } from "@/features/event/queries";
 import { finalizeMatching, simulateMatching, type MatchingSummary } from "@/features/matching/service";
-import { aliasKey } from "@/features/profile/alias";
 import { requireStaff } from "./dal";
-import { pickJokerInterests } from "./joker";
 import { isPurgeConfirmed } from "./purge-confirmation";
+import { addJokerRecord, purgeAllRecords, removeJokerRecord, startEventDayRecord } from "./service";
 
 export type ActionResult = { ok: true; message: string } | { ok: false; message: string };
 
-async function currentPhase() {
-  const s = await db.eventSettings.findUnique({ where: { id: 1 }, select: { phase: true } });
-  return s?.phase ?? "REGISTRATION";
+/** `PhaseError`'ı kullanıcıya gösterilecek sonuca çevirir; başka hataları yeniden fırlatır. */
+function phaseFailure(err: unknown, wrongPhaseMessage: string): { ok: false; message: string } {
+  if (!(err instanceof PhaseError)) throw err;
+  return { ok: false, message: err.reason === "missing_settings" ? MISSING_SETTINGS_MESSAGE : wrongPhaseMessage };
 }
 
 function invalidatePublicCaches() {
@@ -34,7 +35,7 @@ function invalidatePublicCaches() {
 // ── Ekip girişi ──────────────────────────────────────────────
 
 // IP başına 15 dakikada en fazla 10 deneme.
-const loginLimiter = new RateLimiter(10, 15 * 60_000);
+const loginLimiter = new RateLimiter({ name: "staff-login-ip", limit: 10, windowMs: 15 * 60_000 });
 
 function sha256(value: string): Buffer {
   return createHash("sha256").update(value, "utf8").digest();
@@ -46,11 +47,10 @@ function passwordMatches(input: string, expected: string): boolean {
 }
 
 export async function staffLogin(password: string): Promise<ActionResult> {
-  const h = await headers();
-  const ip = h.get("x-forwarded-for")?.split(",")[0]?.trim() || h.get("x-real-ip") || "local";
-  const limit = loginLimiter.consume(ip);
+  const ip = await getClientIp();
+  const limit = await loginLimiter.consume(ip);
   if (!limit.allowed) {
-    return { ok: false, message: `Çok fazla deneme. ${Math.ceil(limit.retryAfterSeconds / 60)} dakika sonra tekrar dene.` };
+    return { ok: false, message: `Çok fazla deneme. ${formatRetryAfter(limit.retryAfterSeconds)} sonra tekrar dene.` };
   }
 
   const e = env();
@@ -63,8 +63,12 @@ export async function staffLogin(password: string): Promise<ActionResult> {
 
   if (!role) return { ok: false, message: "Şifre hatalı." };
 
-  loginLimiter.reset(ip);
+  const epoch = await getSessionEpoch();
+  if (epoch === null) return { ok: false, message: MISSING_SETTINGS_MESSAGE };
+
+  await loginLimiter.reset(ip);
   const session = await getSession();
+  bindSessionEpoch(session, epoch);
   session.staffRole = role;
   await session.save();
   redirect(role === "admin" ? "/admin" : "/admin/check-in");
@@ -80,23 +84,34 @@ export async function staffLogout(): Promise<void> {
 
 // ── Eşleştirme ───────────────────────────────────────────────
 
-export async function simulateMatchingAction(): Promise<MatchingSummary> {
+export type SimulateResult = { ok: true; summary: MatchingSummary } | { ok: false; message: string };
+
+export async function simulateMatchingAction(): Promise<SimulateResult> {
   await requireStaff("admin");
-  return simulateMatching(db);
+  try {
+    return { ok: true, summary: await simulateMatching(db) };
+  } catch (err) {
+    return phaseFailure(err, "Simülasyon yalnızca kayıt fazında yapılabilir.");
+  }
 }
 
 export type FinalizeResult =
   | { ok: true; message: string; summary: MatchingSummary; sent: number; failed: number }
   | { ok: false; message: string; summary?: MatchingSummary };
 
-/** Eşleşmeleri kesinleştirir, fazı MATCHED yapar ve profili olan herkese duyuru e-postası atar. */
+/**
+ * Eşleşmeleri kesinleştirir (faz kilidi + yazma + koşullu faz geçişi tek transaction'da),
+ * ardından profili olan herkese duyuru e-postası atar.
+ */
 export async function finalizeAndNotify(): Promise<FinalizeResult> {
   await requireStaff("admin");
-  if ((await currentPhase()) !== "REGISTRATION") {
-    return { ok: false, message: "Eşleştirme yalnızca kayıt fazında kesinleştirilebilir." };
-  }
 
-  const summary = await finalizeMatching(db);
+  let summary: MatchingSummary;
+  try {
+    summary = await finalizeMatching(db);
+  } catch (err) {
+    return phaseFailure(err, "Eşleştirme yalnızca kayıt fazında kesinleştirilebilir.");
+  }
   if (!summary.isValid) {
     return { ok: false, message: "Eşleştirme geçersiz; uyarıları giderip tekrar deneyin.", summary };
   }
@@ -117,7 +132,8 @@ export async function finalizeAndNotify(): Promise<FinalizeResult> {
       sent++;
     } catch (err) {
       failed++;
-      console.error("[bildirim] e-posta gönderilemedi", err);
+      // Yalnızca hata türü: SMTP hata mesajı alıcı adresini içerebilir.
+      console.error(`[bildirim] e-posta gönderilemedi (${safeErrorSummary(err)})`);
     }
   }
 
@@ -132,13 +148,14 @@ export async function finalizeAndNotify(): Promise<FinalizeResult> {
   };
 }
 
-/** Faz 3'e geçiş: öğrenci panellerinde QR bilet görünür. */
+/** Faz 3'e geçiş (koşullu: yalnızca MATCHED → EVENT_DAY). Öğrenci panellerinde QR bilet görünür. */
 export async function startEventDay(): Promise<ActionResult> {
   await requireStaff("admin");
-  if ((await currentPhase()) !== "MATCHED") {
-    return { ok: false, message: "Bilet modu yalnızca eşleşmeler kesinleştikten sonra açılabilir." };
+  try {
+    await startEventDayRecord(db);
+  } catch (err) {
+    return phaseFailure(err, "Bilet modu yalnızca eşleşmeler kesinleştikten sonra açılabilir.");
   }
-  await db.eventSettings.update({ where: { id: 1 }, data: { phase: "EVENT_DAY" } });
   invalidatePublicCaches();
   refresh();
   return { ok: true, message: "Bilet modu açıldı. Öğrenciler panelde QR biletlerini görüyor." };
@@ -149,46 +166,27 @@ export async function startEventDay(): Promise<ActionResult> {
 export async function addJoker(tier: BudgetTierKey): Promise<ActionResult> {
   await requireStaff("admin");
   if (!BUDGET_TIER_KEYS.includes(tier)) return { ok: false, message: "Geçersiz bütçe grubu." };
-  if ((await currentPhase()) !== "REGISTRATION") {
-    return { ok: false, message: "Joker yalnızca eşleştirmeden önce eklenebilir." };
+  let alias: string;
+  try {
+    alias = await addJokerRecord(db, tier);
+  } catch (err) {
+    return phaseFailure(err, "Joker yalnızca eşleştirmeden önce eklenebilir.");
   }
-
-  const group = await db.participantProfile.findMany({
-    where: { budgetTier: tier },
-    select: { interests: { select: { interestSlug: true } } },
-  });
-  const interests = pickJokerInterests(group.map((p) => p.interests.map((i) => i.interestSlug)));
-  if (interests.length < 3) interests.push(...["kitap", "kahve", "muzik"].filter((s) => !interests.includes(s)));
-
-  // "Joker Geyik 1", "Joker Geyik 2"… boşta olan ilk numara.
-  let n = 1;
-  while (await db.participantProfile.findUnique({ where: { aliasKey: aliasKey(`Joker Geyik ${n}`) } })) n++;
-  const alias = `Joker Geyik ${n}`;
-
-  await db.participantProfile.create({
-    data: {
-      alias,
-      aliasKey: aliasKey(alias),
-      avatarId: "geyik",
-      budgetTier: tier,
-      isJoker: true,
-      giftHints: "Organizasyon ekibinden gönüllü joker 🦌",
-      ticketCode: generateTicketCode(),
-      interests: { create: interests.slice(0, 7).map((interestSlug) => ({ interestSlug })) },
-    },
-  });
   refresh();
   return { ok: true, message: `${alias} eklendi.` };
 }
 
 export async function removeJoker(profileId: string): Promise<ActionResult> {
   await requireStaff("admin");
-  if ((await currentPhase()) !== "REGISTRATION") {
-    return { ok: false, message: "Eşleştirmeden sonra joker kaldırılamaz." };
+  if (typeof profileId !== "string" || profileId.length > 64) return { ok: false, message: "Joker bulunamadı." };
+  let removed: boolean;
+  try {
+    removed = await removeJokerRecord(db, profileId);
+  } catch (err) {
+    return phaseFailure(err, "Eşleştirmeden sonra joker kaldırılamaz.");
   }
-  const { count } = await db.participantProfile.deleteMany({ where: { id: profileId, isJoker: true } });
   refresh();
-  return count ? { ok: true, message: "Joker kaldırıldı." } : { ok: false, message: "Joker bulunamadı." };
+  return removed ? { ok: true, message: "Joker kaldırıldı." } : { ok: false, message: "Joker bulunamadı." };
 }
 
 // ── Etkinliği sonlandır ve verileri imha et ──────────────────
@@ -199,26 +197,26 @@ export async function purgeAllData(confirmation: string): Promise<ActionResult> 
     return { ok: false, message: "Onay ifadesi eşleşmedi; hiçbir veri silinmedi." };
   }
 
-  const [matches, interests, profiles, identities] = await db.$transaction([
-    db.match.deleteMany(),
-    db.profileInterest.deleteMany(),
-    db.participantProfile.deleteMany(),
-    db.authIdentity.deleteMany(),
-    db.eventSettings.update({ where: { id: 1 }, data: { phase: "CLOSED", dataPurgedAt: new Date() } }),
-  ]);
+  let counts;
+  try {
+    counts = await purgeAllRecords(db);
+  } catch (err) {
+    return phaseFailure(err, "İmha yapılamadı.");
+  }
 
   // Silinen satırlar veritabanı dosyasının boş sayfalarında kalabilir; VACUUM dosyayı yeniden yazar.
   // (SQLite ve PostgreSQL'de aynı komut; transaction dışında çalışmalı.)
   try {
     await db.$executeRawUnsafe("VACUUM");
   } catch (err) {
-    console.error("[imha] VACUUM çalıştırılamadı", err);
+    console.error(`[imha] VACUUM çalıştırılamadı (${safeErrorSummary(err)})`);
   }
 
+  // Oturum dönemi arttı: bu yöneticininki dahil imhadan önce açılmış tüm oturumlar artık geçersiz.
   invalidatePublicCaches();
   refresh();
   return {
     ok: true,
-    message: `Etkinlik sonlandırıldı. ${identities.count} kimlik, ${profiles.count} profil, ${interests.count} ilgi alanı ve ${matches.count} eşleşme kalıcı olarak silindi.`,
+    message: `Etkinlik sonlandırıldı. ${counts.identities} kimlik, ${counts.profiles} profil, ${counts.interests} ilgi alanı ve ${counts.matches} eşleşme kalıcı olarak silindi. Tüm oturumlar kapatıldı.`,
   };
 }

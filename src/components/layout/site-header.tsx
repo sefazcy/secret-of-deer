@@ -1,15 +1,14 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { getStaffRole } from "@/features/admin/dal";
 import { getCurrentIdentity } from "@/features/auth/dal";
-import { getSession } from "@/lib/session";
 
 const primary = "rounded-lg bg-holly px-3 py-2 font-semibold text-holly-ink hover:brightness-110";
 const plain = "rounded-lg px-3 py-2 hover:bg-white/10";
 
 /** Oturuma göre menü: ziyaretçi → Katıl, öğrenci → Panelim, ekip → Yönetim / Check-in. */
 async function HeaderNav() {
-  const [session, identity] = await Promise.all([getSession(), getCurrentIdentity()]);
-  const staff = session.staffRole;
+  const [staff, identity] = await Promise.all([getStaffRole(), getCurrentIdentity()]);
   return (
     <>
       {staff && (

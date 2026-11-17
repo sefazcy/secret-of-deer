@@ -4,18 +4,13 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { OTP } from "@/lib/constants";
 import { sendOtpMail } from "@/lib/mail";
-import { getSession } from "@/lib/session";
-import {
-  deriveIdentityRef,
-  encryptEmail,
-  generateOtp,
-  generateProfileToken,
-  hashEmail,
-  hashOtp,
-  safeEqual,
-} from "@/lib/crypto";
+import { formatRetryAfter } from "@/lib/rate-limit";
+import { getClientIp } from "@/lib/request";
+import { bindSessionEpoch, getSession, getSessionEpoch } from "@/lib/session";
+import { deriveIdentityRef } from "@/lib/crypto";
+import { MISSING_SETTINGS_MESSAGE } from "@/features/event/phase";
+import { otpLimiters, requestOtpCore, verifyOtpCore, type OtpDeps } from "./otp-service";
 import { requestOtpSchema, verifyOtpSchema } from "./schemas";
 
 type FieldErrors<K extends string> = Partial<Record<K, string>>;
@@ -41,6 +36,14 @@ function firstErrors<K extends string>(error: z.ZodError): FieldErrors<K> {
   return out;
 }
 
+async function otpDeps(): Promise<OtpDeps> {
+  return { db, ip: await getClientIp(), limiters: otpLimiters, sendOtp: sendOtpMail };
+}
+
+function tooMany(retryAfterSeconds: number) {
+  return `Çok fazla deneme yapıldı. ${formatRetryAfter(retryAfterSeconds)} sonra tekrar dene.`;
+}
+
 /**
  * 1. adım: e-postaya 6 haneli kod gönder.
  * Aynı yanıt hem yeni hem kayıtlı adresler için döner (adres var mı yok mu sızdırılmaz).
@@ -53,73 +56,36 @@ export async function requestOtp(input: { email: string; kvkk: boolean; pledge: 
   }
   const { email } = parsed.data;
 
-  const settings = await db.eventSettings.findUnique({ where: { id: 1 }, select: { phase: true } });
-  if (settings?.phase === "CLOSED") {
-    return { ok: false, message: "Etkinlik sona erdi, yeni giriş yapılamıyor. Görüşmek üzere! 🎄" };
-  }
-
-  const emailHash = hashEmail(email);
-  const existing = await db.authIdentity.findUnique({
-    where: { emailHash },
-    select: { id: true, otpLastSentAt: true },
-  });
-
-  // Kayıtlar kapandıysa sadece önceden kayıtlı olanlar giriş yapabilir.
-  if (!existing && settings && settings.phase !== "REGISTRATION") {
-    return { ok: false, message: "Kayıtlar kapandı. Önceden kayıt olduysan aynı adresle giriş yapabilirsin." };
-  }
-
-  const now = Date.now();
-  if (existing?.otpLastSentAt) {
-    const resendAvailableAt = existing.otpLastSentAt.getTime() + OTP.resendSeconds * 1000;
-    if (now < resendAvailableAt) {
-      const wait = Math.ceil((resendAvailableAt - now) / 1000);
-      return { ok: false, message: `Yeni kod için ${wait} saniye beklemelisin.`, resendAvailableAt };
+  const out = await requestOtpCore(await otpDeps(), email);
+  switch (out.status) {
+    case "sent":
+      return {
+        ok: true,
+        email,
+        resendAvailableAt: out.resendAvailableAt,
+        devMode: env().MAIL_MODE === "console" && process.env.NODE_ENV !== "production",
+      };
+    case "cooldown": {
+      const wait = Math.max(1, Math.ceil((out.resendAvailableAt - Date.now()) / 1000));
+      return { ok: false, message: `Yeni kod için ${wait} saniye beklemelisin.`, resendAvailableAt: out.resendAvailableAt };
     }
+    case "rate_limited":
+      return {
+        ok: false,
+        message:
+          out.scope === "email"
+            ? `Bu adrese bugün çok fazla kod gönderildi. ${formatRetryAfter(out.retryAfterSeconds)} sonra tekrar dene.`
+            : tooMany(out.retryAfterSeconds),
+      };
+    case "missing_settings":
+      return { ok: false, message: MISSING_SETTINGS_MESSAGE };
+    case "event_closed":
+      return { ok: false, message: "Etkinlik sona erdi, yeni giriş yapılamıyor. Görüşmek üzere! 🎄" };
+    case "registration_closed":
+      return { ok: false, message: "Kayıtlar kapandı. Önceden kayıt olduysan aynı adresle giriş yapabilirsin." };
+    case "send_failed":
+      return { ok: false, message: "Kodu gönderemedik. Birkaç dakika sonra tekrar dener misin?" };
   }
-
-  const code = generateOtp();
-  const sentAt = new Date(now);
-  const consent = { kvkkAcceptedAt: sentAt, pledgeAcceptedAt: sentAt };
-  const otpFields = (identityId: string) => ({
-    otpHash: hashOtp(identityId, code),
-    otpExpiresAt: new Date(now + OTP.ttlMinutes * 60_000),
-    otpAttempts: 0,
-    otpLastSentAt: sentAt,
-  });
-
-  if (existing) {
-    await db.authIdentity.update({ where: { id: existing.id }, data: { ...otpFields(existing.id), ...consent } });
-  } else {
-    // OTP özeti kimliğin id'sine bağlı olduğu için id'yi önceden üretiyoruz.
-    const id = crypto.randomUUID();
-    await db.authIdentity.create({
-      data: {
-        id,
-        emailHash,
-        encryptedEmail: encryptEmail(email),
-        profileToken: generateProfileToken(),
-        ...otpFields(id),
-        ...consent,
-      },
-    });
-  }
-
-  try {
-    await sendOtpMail(email, code);
-  } catch (err) {
-    console.error("[otp] e-posta gönderilemedi", err);
-    // Bekleme süresini sıfırla ki kullanıcı hemen tekrar deneyebilsin.
-    await db.authIdentity.update({ where: { emailHash }, data: { otpLastSentAt: null } });
-    return { ok: false, message: "Kodu gönderemedik. Birkaç dakika sonra tekrar dener misin?" };
-  }
-
-  return {
-    ok: true,
-    email,
-    resendAvailableAt: now + OTP.resendSeconds * 1000,
-    devMode: env().MAIL_MODE === "console",
-  };
 }
 
 const INVALID_CODE = "Kod hatalı ya da süresi dolmuş.";
@@ -135,48 +101,38 @@ export async function verifyOtp(input: { email: string; code: string }): Promise
   }
   const { email, code } = parsed.data;
 
-  const identity = await db.authIdentity.findUnique({
-    where: { emailHash: hashEmail(email) },
-    select: { id: true, otpHash: true, otpExpiresAt: true, profileToken: true },
-  });
-
-  if (!identity?.otpHash || !identity.otpExpiresAt) {
-    return { ok: false, message: INVALID_CODE, expired: true };
-  }
-  if (identity.otpExpiresAt.getTime() < Date.now()) {
-    return { ok: false, message: "Kodun süresi doldu. Yeni bir kod iste.", expired: true };
-  }
-
-  // Deneme hakkını kontrol etmeden ÖNCE atomik olarak düş: paralel isteklerle limit aşılamaz.
-  const consumed = await db.authIdentity.updateMany({
-    where: { id: identity.id, otpHash: identity.otpHash, otpAttempts: { lt: OTP.maxAttempts } },
-    data: { otpAttempts: { increment: 1 } },
-  });
-  if (consumed.count === 0) {
-    return { ok: false, message: "Çok fazla hatalı deneme yaptın. Yeni bir kod iste.", expired: true };
-  }
-
-  if (!safeEqual(hashOtp(identity.id, code), identity.otpHash)) {
-    const after = await db.authIdentity.findUnique({ where: { id: identity.id }, select: { otpAttempts: true } });
-    const attemptsLeft = Math.max(0, OTP.maxAttempts - (after?.otpAttempts ?? OTP.maxAttempts));
-    return attemptsLeft > 0
-      ? { ok: false, message: `Kod hatalı. ${attemptsLeft} deneme hakkın kaldı.`, attemptsLeft }
-      : { ok: false, message: "Kod hatalı ve deneme hakkın bitti. Yeni bir kod iste.", attemptsLeft: 0, expired: true };
+  const out = await verifyOtpCore(await otpDeps(), email, code);
+  switch (out.status) {
+    case "rate_limited":
+      return { ok: false, message: tooMany(out.retryAfterSeconds) };
+    case "missing_settings":
+      return { ok: false, message: MISSING_SETTINGS_MESSAGE };
+    case "event_closed":
+      return { ok: false, message: "Etkinlik sona erdi, giriş yapılamıyor.", expired: true };
+    case "invalid":
+      return { ok: false, message: INVALID_CODE, expired: true };
+    case "expired":
+      return { ok: false, message: "Kodun süresi doldu. Yeni bir kod iste.", expired: true };
+    case "too_many_attempts":
+      return { ok: false, message: "Çok fazla hatalı deneme yaptın. Yeni bir kod iste.", expired: true };
+    case "wrong_code":
+      return out.attemptsLeft > 0
+        ? { ok: false, message: `Kod hatalı. ${out.attemptsLeft} deneme hakkın kaldı.`, attemptsLeft: out.attemptsLeft }
+        : { ok: false, message: "Kod hatalı ve deneme hakkın bitti. Yeni bir kod iste.", attemptsLeft: 0, expired: true };
+    case "verified":
+      break;
   }
 
-  // Tek kullanımlık: kodu yalnızca hâlâ aynı kodsa tüket (aynı anda iki başarılı giriş olmaz).
-  const used = await db.authIdentity.updateMany({
-    where: { id: identity.id, otpHash: identity.otpHash },
-    data: { otpHash: null, otpExpiresAt: null, otpAttempts: 0, isVerified: true },
-  });
-  if (used.count === 0) return { ok: false, message: INVALID_CODE, expired: true };
+  const epoch = await getSessionEpoch();
+  if (epoch === null) return { ok: false, message: MISSING_SETTINGS_MESSAGE };
 
   const session = await getSession();
-  session.identityId = identity.id;
+  bindSessionEpoch(session, epoch);
+  session.identityId = out.identityId;
   await session.save();
 
   const profile = await db.participantProfile.findUnique({
-    where: { identityRef: deriveIdentityRef(identity.profileToken) },
+    where: { identityRef: deriveIdentityRef(out.profileToken) },
     select: { id: true },
   });
 

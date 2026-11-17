@@ -2,14 +2,14 @@
 
 import { updateTag } from "next/cache";
 import { redirect } from "next/navigation";
-import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { deriveIdentityRef } from "@/lib/crypto";
-import { generateTicketCode } from "@/lib/ticket";
 import { getCurrentIdentity, getCurrentProfileId } from "@/features/auth/dal";
+import { MISSING_SETTINGS_MESSAGE, PhaseError } from "@/features/event/phase";
 import { PARTICIPANT_COUNT_TAG } from "@/features/event/queries";
-import { aliasKey, generateAlias, normalizeAlias } from "./alias";
+import { findFreeAlias } from "./alias";
 import { aliasStepSchema, profileSchema, type ProfileInput } from "./schemas";
+import { createProfileRecord, isAliasTaken, updateProfileRecord } from "./service";
 
 type ProfileField = keyof ProfileInput;
 
@@ -31,12 +31,6 @@ const STEP_OF: Record<ProfileField, 1 | 2 | 3> = {
   giftHints: 3,
   giftExclusions: 3,
 };
-
-/** Rumuz başka bir profil tarafından alınmış mı? (Düzenlemede kişinin kendi rumuzu sayılmaz.) */
-async function isAliasTaken(alias: string, exceptProfileId?: string | null): Promise<boolean> {
-  const hit = await db.participantProfile.findUnique({ where: { aliasKey: aliasKey(alias) }, select: { id: true } });
-  return !!hit && hit.id !== exceptProfileId;
-}
 
 async function requireIdentity() {
   const identity = await getCurrentIdentity();
@@ -64,128 +58,80 @@ export async function checkAlias(alias: string): Promise<AliasCheckResult> {
   await requireIdentity();
   const parsed = aliasStepSchema.shape.alias.safeParse(alias);
   if (!parsed.success) return { ok: false, message: parsed.error.issues[0]!.message };
-  if (await isAliasTaken(parsed.data, await getCurrentProfileId())) return { ok: false, message: ALIAS_TAKEN };
+  if (await isAliasTaken(db, parsed.data, await getCurrentProfileId())) return { ok: false, message: ALIAS_TAKEN };
   return { ok: true, alias: parsed.data };
 }
 
-/** "Rastgele rumuz üret": şu an boşta olan, Hacettepe temalı bir rumuz döndürür. */
+/** "Rastgele rumuz üret": en fazla 20 denemede boşta olan, Hacettepe temalı bir rumuz döndürür. */
 export async function suggestAlias(): Promise<string> {
   await requireIdentity();
-  for (let i = 0; i < 25; i++) {
-    const candidate = generateAlias();
-    if (!(await isAliasTaken(candidate))) return candidate;
-  }
-  // Kombinasyonlar tükenmeye yakınsa sayı ekle.
-  for (;;) {
-    const candidate = `${generateAlias()} ${Math.floor(10 + Math.random() * 90)}`;
-    if (!(await isAliasTaken(candidate))) return candidate;
-  }
+  return findFreeAlias((candidate) => isAliasTaken(db, candidate));
 }
 
-/** Sihirbazın son adımı: anonim profili oluştur ve panele yönlendir. */
+const ALIAS_TAKEN_RESULT: CreateProfileResult = {
+  ok: false,
+  message: ALIAS_TAKEN,
+  fieldErrors: { alias: ALIAS_TAKEN },
+  step: 1,
+};
+
+function phaseErrorResult(err: unknown, wrongPhaseMessage: string): CreateProfileResult {
+  if (!(err instanceof PhaseError)) throw err;
+  return { ok: false, message: err.reason === "missing_settings" ? MISSING_SETTINGS_MESSAGE : wrongPhaseMessage };
+}
+
+/**
+ * Sihirbazın son adımı: anonim profili oluştur ve panele yönlendir.
+ * Faz kontrolü ve kayıt aynı transaction'da (eşleştirme kesinleşirken araya profil sızamaz).
+ */
 export async function createProfile(input: ProfileInput): Promise<CreateProfileResult> {
   const identity = await requireIdentity();
 
   const parsed = parseProfile(input);
   if (!parsed.ok) return parsed.error;
-  const data = parsed.data;
 
-  const settings = await db.eventSettings.findUnique({ where: { id: 1 }, select: { phase: true } });
-  if (settings && settings.phase !== "REGISTRATION") {
-    return { ok: false, message: "Kayıtlar kapandı, artık yeni profil oluşturulamıyor." };
+  let outcome;
+  try {
+    outcome = await createProfileRecord(db, deriveIdentityRef(identity.profileToken), parsed.data);
+  } catch (err) {
+    return phaseErrorResult(err, "Kayıtlar kapandı, artık yeni profil oluşturulamıyor.");
   }
 
-  const identityRef = deriveIdentityRef(identity.profileToken);
-  if (await db.participantProfile.findUnique({ where: { identityRef }, select: { id: true } })) {
-    redirect("/panel"); // Zaten profili var (ör. çift tıklama ya da ikinci sekme).
+  switch (outcome.status) {
+    case "alias_taken":
+      return ALIAS_TAKEN_RESULT;
+    case "failed":
+      return { ok: false, message: "Profil oluşturulamadı. Lütfen tekrar dene." };
+    case "exists":
+      redirect("/panel"); // Zaten profili var (ör. çift tıklama ya da ikinci sekme).
+    case "created":
+      updateTag(PARTICIPANT_COUNT_TAG);
+      redirect("/panel");
   }
-
-  const alias = normalizeAlias(data.alias);
-
-  // Bilet kodu çakışması çok düşük ihtimal; yine de birkaç kez dene.
-  let created = false;
-  for (let attempt = 0; attempt < 5 && !created; attempt++) {
-    try {
-      await db.participantProfile.create({
-        data: {
-          identityRef,
-          alias,
-          aliasKey: aliasKey(alias),
-          avatarId: data.avatarId,
-          budgetTier: data.budgetTier,
-          giftHints: data.giftHints,
-          giftExclusions: data.giftExclusions,
-          ticketCode: generateTicketCode(),
-          interests: { create: data.interests.map((interestSlug) => ({ interestSlug })) },
-        },
-      });
-      created = true;
-    } catch (err) {
-      if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") throw err;
-      // Hangi alanın çakıştığını veritabanı sürücüsüne göre değişen meta'dan değil, sorgudan anla.
-      if (await isAliasTaken(alias)) {
-        return { ok: false, message: ALIAS_TAKEN, fieldErrors: { alias: ALIAS_TAKEN }, step: 1 };
-      }
-      if (await db.participantProfile.findUnique({ where: { identityRef }, select: { id: true } })) {
-        redirect("/panel");
-      }
-      // Aksi hâlde bilet kodu çakıştı → yeni kodla tekrar dene.
-    }
-  }
-  if (!created) return { ok: false, message: "Profil oluşturulamadı. Lütfen tekrar dene." };
-
-  updateTag(PARTICIPANT_COUNT_TAG);
-  redirect("/panel");
 }
 
 /**
  * Panelden profil düzenleme. Yalnızca kayıt fazında (eşleşmeler ilgi alanı ve bütçeye göre
- * yapıldığı için sonrasında değişiklik eşleşmeyi bozar).
+ * yapıldığı için sonrasında değişiklik eşleşmeyi bozar). Faz kontrolü ve yazma atomik.
  */
 export async function updateProfile(input: ProfileInput): Promise<UpdateProfileResult> {
   const identity = await requireIdentity();
   const parsed = parseProfile(input);
   if (!parsed.ok) return parsed.error;
-  const data = parsed.data;
 
-  const settings = await db.eventSettings.findUnique({ where: { id: 1 }, select: { phase: true } });
-  if (settings && settings.phase !== "REGISTRATION") {
-    return { ok: false, message: "Eşleşmeler yapıldıktan sonra profil değiştirilemez." };
-  }
-
-  const profile = await db.participantProfile.findUnique({
-    where: { identityRef: deriveIdentityRef(identity.profileToken) },
-    select: { id: true },
-  });
-  if (!profile) redirect("/profil-olustur");
-
-  const alias = normalizeAlias(data.alias);
-  if (await isAliasTaken(alias, profile.id)) {
-    return { ok: false, message: ALIAS_TAKEN, fieldErrors: { alias: ALIAS_TAKEN }, step: 1 };
-  }
-
+  let outcome;
   try {
-    await db.$transaction([
-      db.profileInterest.deleteMany({ where: { profileId: profile.id } }),
-      db.participantProfile.update({
-        where: { id: profile.id },
-        data: {
-          alias,
-          aliasKey: aliasKey(alias),
-          avatarId: data.avatarId,
-          budgetTier: data.budgetTier,
-          giftHints: data.giftHints,
-          giftExclusions: data.giftExclusions,
-          interests: { create: data.interests.map((interestSlug) => ({ interestSlug })) },
-        },
-      }),
-    ]);
+    outcome = await updateProfileRecord(db, deriveIdentityRef(identity.profileToken), parsed.data);
   } catch (err) {
-    // Kontrol ile yazma arasında başkası aynı rumuzu aldıysa.
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-      return { ok: false, message: ALIAS_TAKEN, fieldErrors: { alias: ALIAS_TAKEN }, step: 1 };
-    }
-    throw err;
+    return phaseErrorResult(err, "Eşleşmeler yapıldıktan sonra profil değiştirilemez.");
   }
-  return { ok: true };
+
+  switch (outcome.status) {
+    case "no_profile":
+      redirect("/profil-olustur");
+    case "alias_taken":
+      return ALIAS_TAKEN_RESULT;
+    case "updated":
+      return { ok: true };
+  }
 }

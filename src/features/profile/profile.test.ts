@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { aliasKey, generateAlias, normalizeAlias } from "./alias";
+import { ALIAS_SUGGESTION_ATTEMPTS, aliasKey, findFreeAlias, generateAlias, generateSuffixedAlias, normalizeAlias } from "./alias";
 import { aliasStepSchema, interestsStepSchema, profileSchema, giftNotesStepSchema } from "./schemas";
 
 test("rumuz anahtarı Türkçe büyük/küçük harf ve boşluklardan bağımsız", () => {
@@ -56,4 +56,27 @@ test("tam profil şeması rumuzu normalleştirir", () => {
     budgetTier: "TIER_450_600",
   });
   assert.equal(out.alias, "Ring Kedisi");
+});
+
+test("rumuz önerisi en fazla 20 denemede sonlanır; hepsi doluysa rastgele sayı ekler", async () => {
+  let calls = 0;
+  const alias = await findFreeAlias(async () => {
+    calls++;
+    return true; // her şey dolu
+  });
+  assert.equal(calls, ALIAS_SUGGESTION_ATTEMPTS);
+  assert.match(alias, / \d{4}$/);
+  assert.ok(aliasStepSchema.safeParse({ alias, avatarId: "geyik" }).success, `şemadan geçmeli: ${alias}`);
+
+  let firstFree = 0;
+  const quick = await findFreeAlias(async () => ++firstFree < 3);
+  assert.equal(firstFree, 3, "boş bulunca hemen döner");
+  assert.doesNotMatch(quick, /\d/);
+});
+
+test("sayı ekli rumuzlar her zaman uzunluk sınırına sığar", () => {
+  for (let i = 0; i < 500; i++) {
+    const alias = generateSuffixedAlias();
+    assert.ok(aliasStepSchema.safeParse({ alias, avatarId: "geyik" }).success, alias);
+  }
 });

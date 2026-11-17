@@ -147,7 +147,30 @@ model EventSettings {
   location              String
   matchesFinalizedAt    DateTime?  @map("matches_finalized_at")
   dataPurgedAt          DateTime?  @map("data_purged_at")
+  /// Faz kilidi: fazı koşul alan her yazma işlemi transaction içinde bu satırı
+  /// `updateMany({ where: { id: 1, phase: … } })` ile günceller. Satır kilidi (PostgreSQL)
+  /// ya da yazma kilidi (SQLite) transaction bitene kadar faz geçişlerini bekletir.
+  lockVersion           Int        @default(0) @map("lock_version")
+  /// Oturum dönemi: veri imhasında artar; eski dönemden kalan tüm çerezler geçersiz olur.
+  sessionEpoch          Int        @default(0) @map("session_epoch")
   updatedAt             DateTime   @updatedAt @map("updated_at")
 
   @@map("event_settings")
+}
+
+// ─────────────────────────────────────────────────────────────
+// 5. DENETİM KAYDI (kişisel veri İÇERMEZ; imhada silinmez)
+// ─────────────────────────────────────────────────────────────
+
+/// Kritik yönetim işlemlerinin izi: yalnızca işlem türü, zaman ve sayısal özet.
+/// E-posta, rumuz, profil id'si gibi hiçbir kişisel/tekil veri yazılmaz.
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  action    String
+  /// Sayısal özet (ör. "profiles=12 matches=12"). Kişisel veri yazılmaz.
+  detail    String   @default("")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("audit_logs")
 }

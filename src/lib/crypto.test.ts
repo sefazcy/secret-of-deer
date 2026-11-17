@@ -11,8 +11,8 @@ Object.assign(process.env, {
   EMAIL_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
   EMAIL_HASH_PEPPER: randomBytes(32).toString("base64url"),
   PROFILE_LINK_SECRET: randomBytes(32).toString("base64url"),
-  ADMIN_PASSWORD: "test-admin-password",
-  CHECKIN_PASSWORD: "test-checkin",
+  ADMIN_PASSWORD: "Test-Admin-Password-2026!",
+  CHECKIN_PASSWORD: "Kapi-Ekibi-2026",
 });
 
 test("e-posta şifreleme gidiş-dönüş çalışır ve her seferinde farklı çıktı üretir", () => {
@@ -39,4 +39,48 @@ test("OTP 6 haneli rakam ve özeti kimliğe bağlı", () => {
   assert.notEqual(c.hashOtp("id-1", "123456"), c.hashOtp("id-2", "123456"));
   assert.ok(c.safeEqual(c.hashOtp("id-1", "123456"), c.hashOtp("id-1", "123456")));
   assert.ok(!c.safeEqual("abc", "abcd"));
+});
+
+test("bozuk ya da manipüle edilmiş şifreli e-posta güvenli ve tek tip hatayla reddedilir", () => {
+  const valid = c.encryptEmail("ali@ogr.hacettepe.edu.tr");
+  const [iv, tag, ct] = valid.split(".") as [string, string, string];
+  const b64 = (n: number) => randomBytes(n).toString("base64url");
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const nonCanonical = (part: string) => {
+    const last = ALPHABET.indexOf(part.at(-1)!);
+    const mutated = part.slice(0, -1) + ALPHABET[last ^ 1];
+    assert.deepEqual(Buffer.from(mutated, "base64url"), Buffer.from(part, "base64url"), "aynı baytlar");
+    return mutated;
+  };
+
+  const bad: Array<[string, string]> = [
+    ["boş", ""],
+    ["tek parça", iv],
+    ["iki parça", `${iv}.${tag}`],
+    ["dört parça", `${valid}.${ct}`],
+    ["boş parça", `${iv}..${ct}`],
+    ["boş şifreli metin", `${iv}.${tag}.`],
+    ["base64 dışı karakter", `${iv}.${tag}.${ct}!`],
+    ["standart base64 (+/=)", `${iv}.${tag}.${Buffer.from(ct, "base64url").toString("base64")}+`],
+    // Etiket 16 bayt = 22 karakter; son karakterin alt 4 biti kullanılmaz. Bunları değiştirmek AYNI baytlara
+    // çözülen ama farklı yazılan bir metin üretir — kanonik kontrol olmasa çözme başarılı olurdu.
+    ["kanonik olmayan base64url", `${iv}.${nonCanonical(tag)}.${ct}`],
+    ["kısa IV (8 bayt)", `${b64(8)}.${tag}.${ct}`],
+    ["uzun IV (16 bayt)", `${b64(16)}.${tag}.${ct}`],
+    ["kısaltılmış etiket (4 bayt)", `${iv}.${b64(4)}.${ct}`],
+    ["uzun etiket (32 bayt)", `${iv}.${b64(32)}.${ct}`],
+    ["aşırı uzun şifreli metin", `${iv}.${tag}.${b64(300)}`],
+    ["aşırı uzun girdi", "a".repeat(5000)],
+    ["yanlış etiket", `${iv}.${b64(16)}.${ct}`],
+  ];
+  for (const [name, payload] of bad) {
+    assert.throws(
+      () => c.decryptEmail(payload),
+      (err: unknown) => err instanceof c.EncryptedEmailError && err.message === "Şifreli e-posta çözülemedi.",
+      name,
+    );
+  }
+  // @ts-expect-error — çalışma zamanında string olmayan girdi
+  assert.throws(() => c.decryptEmail(undefined), c.EncryptedEmailError);
+  assert.equal(c.decryptEmail(valid), "ali@ogr.hacettepe.edu.tr", "geçerli girdi hâlâ çözülür");
 });

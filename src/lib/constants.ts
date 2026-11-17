@@ -9,6 +9,21 @@ export const OTP = {
   maxAttempts: 5,
 } as const;
 
+/**
+ * OTP hız sınırları (çok katmanlı). Kod başına 5 yanlış deneme sınırı (OTP.maxAttempts)
+ * bunlara ek olarak veritabanında atomik tutulur.
+ */
+export const OTP_RATE_LIMITS = {
+  /** Aynı IP'den kod isteme: 15 dakikada 10. */
+  requestPerIp: { limit: 10, windowMs: 15 * 60_000 },
+  /** Aynı e-postaya kod gönderme: 24 saatte 5 (ayrıca her gönderim arası OTP.resendSeconds). */
+  requestPerEmail: { limit: 5, windowMs: 24 * 60 * 60_000 },
+  /** Aynı IP'den kod doğrulama: 15 dakikada 30. */
+  verifyPerIp: { limit: 30, windowMs: 15 * 60_000 },
+  /** Aynı hesap için kod doğrulama (yeni kod istense de sıfırlanmaz): 1 saatte 15. */
+  verifyPerEmail: { limit: 15, windowMs: 60 * 60_000 },
+} as const;
+
 export const BUDGET_TIERS = {
   TIER_300_450: { label: "300–450 TL", min: 300, max: 450 },
   TIER_450_600: { label: "450–600 TL", min: 450, max: 600 },

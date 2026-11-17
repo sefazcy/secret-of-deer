@@ -88,8 +88,10 @@ export function MatchingControls({ phase, hasBlockingIssue }: { phase: Phase; ha
           disabled={isPending}
           onClick={() =>
             startTransition(async () => {
-              setSummary(await simulateMatchingAction());
+              const res = await simulateMatchingAction();
               setConfirming(false);
+              if (res.ok) setSummary(res.summary);
+              else toast.error(res.message);
             })
           }
         >

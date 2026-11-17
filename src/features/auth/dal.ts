@@ -1,15 +1,16 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { deriveIdentityRef } from "@/lib/crypto";
-import { getSession } from "@/lib/session";
+import { getValidSession } from "@/lib/session";
 
 /**
  * Veri Erişim Katmanı: oturumdaki doğrulanmış öğrenci. Yoksa null.
  * Çerez okuduğu için çağıran bileşen <Suspense> içinde olmalı.
  */
 export async function getCurrentIdentity() {
-  const session = await getSession();
-  if (!session.identityId) return null;
+  const { session, current } = await getValidSession();
+  // Veri imhasından önce açılmış (eski dönem) oturumlar geçersiz.
+  if (!current || !session.identityId) return null;
 
   const identity = await db.authIdentity.findUnique({
     where: { id: session.identityId },

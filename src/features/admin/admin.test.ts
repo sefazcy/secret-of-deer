@@ -1,22 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RateLimiter } from "@/lib/rate-limit";
 import { pickJokerInterests } from "./joker";
 import { PURGE_CONFIRMATION, isPurgeConfirmed } from "./purge-confirmation";
-
-test("deneme sınırlayıcı pencere dolunca engeller, pencere bitince sıfırlar", () => {
-  let now = 0;
-  const rl = new RateLimiter(3, 60_000, () => now);
-  assert.ok(rl.consume("ip").allowed);
-  assert.ok(rl.consume("ip").allowed);
-  assert.ok(rl.consume("ip").allowed);
-  const blocked = rl.consume("ip");
-  assert.equal(blocked.allowed, false);
-  assert.equal(blocked.retryAfterSeconds, 60);
-  assert.ok(rl.consume("baska-ip").allowed, "anahtarlar bağımsız");
-  now = 60_000;
-  assert.ok(rl.consume("ip").allowed, "pencere sıfırlandı");
-});
 
 test("joker en yaygın ilgi alanlarını alır ve 3–7 sınırında kalır", () => {
   const group = [

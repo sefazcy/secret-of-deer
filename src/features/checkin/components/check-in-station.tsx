@@ -78,7 +78,7 @@ export function CheckInStation({
         toast.success("Giriş geri alındı.");
         setResult(null);
         await refreshStats();
-      } else toast.error("Geri alınamadı.");
+      } else toast.error(res.message ?? "Geri alınamadı.");
     });
   }
 

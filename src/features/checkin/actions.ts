@@ -3,6 +3,8 @@
 import { db } from "@/lib/db";
 import { parseTicketInput } from "@/lib/ticket";
 import { requireStaff } from "@/features/admin/dal";
+import { MISSING_SETTINGS_MESSAGE, PhaseError } from "@/features/event/phase";
+import { checkInTicket, undoCheckInTicket } from "./service";
 
 export type CheckInPerson = {
   code: string;
@@ -19,15 +21,6 @@ export type CheckInResult =
   | { status: "invalid"; message: string }
   | { status: "not_found"; code: string }
   | { status: "closed"; message: string };
-
-const personSelect = {
-  ticketCode: true,
-  alias: true,
-  avatarId: true,
-  isGiftReady: true,
-  isJoker: true,
-  checkedInAt: true,
-} as const;
 
 function toPerson(p: {
   ticketCode: string;
@@ -47,40 +40,39 @@ function toPerson(p: {
   };
 }
 
-/** QR içeriği ya da elle girilen kodla girişi işaretler. */
+const CHECKIN_CLOSED = "Check-in yalnızca etkinlik günü (bilet modu) açıkken yapılabilir.";
+
+function closedMessage(err: unknown): string {
+  if (!(err instanceof PhaseError)) throw err;
+  return err.reason === "missing_settings" ? MISSING_SETTINGS_MESSAGE : CHECKIN_CLOSED;
+}
+
+/** QR içeriği ya da elle girilen kodla girişi işaretler (faz kontrolü ve yazma atomik). */
 export async function checkIn(input: string): Promise<CheckInResult> {
   await requireStaff("checkin");
 
-  const settings = await db.eventSettings.findUnique({ where: { id: 1 }, select: { phase: true } });
-  if (settings?.phase !== "EVENT_DAY") {
-    return { status: "closed", message: "Check-in yalnızca etkinlik günü (bilet modu) açıkken yapılabilir." };
-  }
-
-  const code = parseTicketInput(input);
+  const code = parseTicketInput(String(input ?? ""));
   if (!code) return { status: "invalid", message: "Bu bir Beytepe Geyiği bileti değil ya da kod hatalı." };
 
-  // Atomik: yalnızca henüz giriş yapmamışsa işaretle. Aynı anda iki okutmada biri "already" alır.
-  const now = new Date();
-  const { count } = await db.participantProfile.updateMany({
-    where: { ticketCode: code, isCheckedIn: false },
-    data: { isCheckedIn: true, checkedInAt: now },
-  });
-
-  const profile = await db.participantProfile.findUnique({ where: { ticketCode: code }, select: personSelect });
-  if (!profile) return { status: "not_found", code };
-  return { status: count === 1 ? "ok" : "already", person: toPerson(profile) };
+  try {
+    const out = await checkInTicket(db, code);
+    if (out.status === "not_found") return { status: "not_found", code };
+    return { status: out.status, person: toPerson(out.person) };
+  } catch (err) {
+    return { status: "closed", message: closedMessage(err) };
+  }
 }
 
-/** Yanlışlıkla yapılan girişi geri alır. */
-export async function undoCheckIn(code: string): Promise<{ ok: boolean }> {
+/** Yanlışlıkla yapılan girişi geri alır. Yalnızca EVENT_DAY fazında (CLOSED vb. reddedilir). */
+export async function undoCheckIn(code: string): Promise<{ ok: boolean; message?: string }> {
   await requireStaff("checkin");
-  const parsed = parseTicketInput(code);
-  if (!parsed) return { ok: false };
-  const { count } = await db.participantProfile.updateMany({
-    where: { ticketCode: parsed, isCheckedIn: true },
-    data: { isCheckedIn: false, checkedInAt: null },
-  });
-  return { ok: count === 1 };
+  const parsed = parseTicketInput(String(code ?? ""));
+  if (!parsed) return { ok: false, message: "Geçersiz bilet kodu." };
+  try {
+    return { ok: await undoCheckInTicket(db, parsed) };
+  } catch (err) {
+    return { ok: false, message: closedMessage(err) };
+  }
 }
 
 export async function getCheckInStats(): Promise<{ checkedIn: number; total: number }> {

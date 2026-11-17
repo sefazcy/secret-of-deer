@@ -23,9 +23,23 @@ function maskEmail(email: string): string {
   return `${user.slice(0, 2)}***@${domain}`;
 }
 
+/**
+ * Konsol (mock) modu yalnızca geliştirme/test içindir. Üretimde env doğrulaması zaten
+ * MAIL_MODE=console'u reddeder; bu ikinci kontrol, yanlış yapılandırmada bile OTP kodlarının
+ * üretim loglarına düşmemesini garanti eder.
+ */
+export function isConsoleMailAllowed(mode: string, nodeEnv: string | undefined): boolean {
+  return mode === "console" && nodeEnv !== "production";
+}
+
 export async function sendMail(input: MailInput): Promise<void> {
-  if (env().MAIL_MODE === "console") {
-    // Geliştirme modu: gerçek gönderim yok, içerik terminale yazılır.
+  const mode = env().MAIL_MODE;
+  if (mode === "console") {
+    if (!isConsoleMailAllowed(mode, process.env.NODE_ENV)) {
+      throw new Error("Üretimde konsol e-posta modu kullanılamaz (MAIL_MODE=smtp olmalı).");
+    }
+    // Geliştirme modu: gerçek gönderim yok, içerik terminale yazılır. Bu, OTP'nin log'a
+    // yazıldığı TEK yerdir ve yalnızca NODE_ENV !== "production" iken çalışır.
     console.info(
       `\n┌─ 📧 [MOCK MAIL] → ${maskEmail(input.to)}\n│ ${input.subject}\n│\n${input.text
         .split("\n")
@@ -40,7 +54,8 @@ export async function sendMail(input: MailInput): Promise<void> {
 export async function sendOtpMail(to: string, code: string): Promise<void> {
   await sendMail({
     to,
-    subject: `Beytepe Geyiği doğrulama kodun: ${code}`,
+    // Kod konu satırına yazılmaz: konu, sunucu loglarında ve kilit ekranı bildirimlerinde görünür.
+    subject: "Beytepe Geyiği doğrulama kodun",
     text: [
       "Selam!",
       "",
